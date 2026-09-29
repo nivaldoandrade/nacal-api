@@ -1,4 +1,4 @@
-# NaFoodiary API
+# NaCal API
 
 API serverless para um diário alimentar inteligente com inteligência artificial. O sistema permite que os usuários registrem suas refeições através de **fotos** ou **áudios**, que são analisados automaticamente por IA para identificar os alimentos, estimar quantidades e calcular macronutrientes (proteínas, carboidratos e gorduras). O sistema também calcula metas diárias personalizadas de calorias e macros com base no perfil do usuário.
 
@@ -194,9 +194,9 @@ Para mais informações: [AWS Credentials](https://www.serverless.com/framework/
 ### 1. Clone o repositório
 
 ```bash
-git clone https://github.com/nivaldoandrade/nafoodiary-serverless
+git clone https://github.com/nivaldoandrade/nacal-api
 
-cd nafoodiary-serverless/api
+cd nacal-api
 ```
 
 ### 2. Instale as dependências
