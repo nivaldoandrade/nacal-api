@@ -1,0 +1,38 @@
+plans:
+  handler: src/main/functions/billing/getPlans.handler
+  events:
+    - httpApi:
+        path: /billing/plans
+        method: get
+        authorizer:
+          name: CognitoAuthorizer
+trial:
+  handler: src/main/functions/billing/startTrial.handler
+  events:
+    - httpApi:
+        path: /billing/trial
+        method: post
+        authorizer:
+          name: CognitoAuthorizer
+checkout:
+  handler: src/main/functions/billing/checkout.handler
+  events:
+    - httpApi:
+        path: /billing/checkout
+        method: post
+        authorizer:
+          name: CognitoAuthorizer
+cancel:
+  handler: src/main/functions/billing/cancel.handler
+  events:
+    - httpApi:
+        path: /billing/cancel
+        method: post
+        authorizer:
+          name: CognitoAuthorizer
+webhookAsaas:
+  handler: src/main/functions/billing/webhookAsaas.handler
+  events:
+    - httpApi:
+        path: /billing/webhooks/asaas
+        method: post

@@ -20,6 +20,10 @@ export function lambdaHttpAdapter(controllerImpl: Constructor<Controller<'privat
       const body = lambdaHttpBodyParser(event.body);
       const params = event.pathParameters ?? {};
       const queryParams = event.queryStringParameters ?? {};
+      const headers = Object.fromEntries(
+        Object.entries(event.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]),
+      );
+      const rawBody = event.body ?? undefined;
 
       const accountId = 'authorizer' in event.requestContext
         ? event.requestContext.authorizer.jwt.claims['internalId'] as string | undefined
@@ -36,8 +40,8 @@ export function lambdaHttpAdapter(controllerImpl: Constructor<Controller<'privat
       const controller = Registry.getInstance().resolver(controllerImpl);
 
       const request = accountId
-        ? { body, params, queryParams, accountId }
-        : { body, params, queryParams };
+        ? { body, params, queryParams, headers, rawBody, accountId }
+        : { body, params, queryParams, headers, rawBody };
 
       const rateLimitRules = getRateLimitRules(controller);
 
@@ -107,6 +111,8 @@ export function lambdaHttpAdapter(controllerImpl: Constructor<Controller<'privat
           message: error.message,
         });
       }
+
+      console.error(error);
 
       return lambdaHttpErrorResponse({
         statusCode: 500,

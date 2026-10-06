@@ -33,6 +33,8 @@ export namespace Controller {
     body: TBody;
     params: TParams;
     queryParams: TQueryParams;
+    headers: Record<string, string | undefined>;
+    rawBody?: string;
   };
 
   export type RequestPublic<

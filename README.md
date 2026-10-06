@@ -15,6 +15,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Alarmes**: Notificação por email quando refeições falham (Dead Letter Queue);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
+- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro ilimitado; **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração;
 
 ## Arquitetura
 
@@ -37,16 +38,18 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
    │  - Profile    │                └──────────────────┘
    │  - Meal       │
    │  - Account    │
+   │  - Billing    │
    └───────┬───────┘
            │
            ▼
-   ┌───────────────┐
-   │  DynamoDB     │◄──── Single Table Design
-   │  (Accounts,   │      (PAY_PER_REQUEST)
-   │   Profiles,   │
-   │   Goals,      │
-   │   Meals)      │
-   └───────────────┘
+   ┌────────────────────┐
+   │  DynamoDB          │◄──── Single Table Design
+   │  (Accounts,        │      (PAY_PER_REQUEST)
+   │   Profiles,        │
+   │   Goals,           │
+   │   Meals,           │
+   │   Subscriptions)   │
+   └────────────────────┘
            │
            ▼ (upload via Presigned POST)
    ┌───────────────┐    S3 Event    ┌──────────────┐    SQS     ┌──────────────┐
@@ -126,6 +129,36 @@ Frontend                          Cognito                       API (Lambda)
 - O `complete-onboarding` é **idempotente**: reexecuta a gravação de `Profile`/`Goal` e o flag com o mesmo `accountId` (retry seguro);
 - Erros: `400 INVALID_GRANT` se a troca de code falhar ou faltar dado no token; se a conta existir mas pertencer a outro `externalId`, `409 EMAIL_ALREADY_IN_USE`; se o token for válido mas não houver `Account` registrada, `404 ACCOUNT_NOT_FOUND`;
 - A troca de código tem timeout de 5 segundos.
+
+## Fluxo de Planos e Pagamento (Billing)
+
+Gateway **Asaas** (sandbox: `api-sandbox.asaas.com`), atrás do contrato `IPaymentGateway` — os use cases nunca citam o gateway:
+
+```text
+TRIAL (dia 0, sem gateway):
+  POST /billing/trial ──► Subscription { status: TRIALING, trialEndsAt: +7d,
+      planId: PRO_MONTHLY }   (1 por conta · Pro imediato · cota ∞)
+
+CHECKOUT:
+  POST /billing/checkout ──► Asaas Checkout ──► { checkoutUrl }
+      mensal = RECURRENT + só cartão     (1ª cobrança imediata)
+      anual  = DETACHED  + Pix/cartão    (pagamento único; renovação via app)
+  App abre checkoutUrl no browser ──► usuário paga
+
+WEBHOOK (fonte da verdade):
+  Asaas ──POST /billing/webhooks/asaas──► header asaas-access-token ──►
+      PAYMENT_CONFIRMED / RECEIVED ──► status ACTIVE + paidUntil (+ciclo) ──►
+      app invalida ['accounts'] e reflete via GET /me
+
+EXPIRAÇÃO (lazy, sem scheduler):
+  resolveEffectivePlan: trial/pago vencido ──► FREE + cota 20/mês
+```
+
+**Observações:**
+- **Idempotência**: dedup por `event.id` na RateLimitTable (TTL 14d = retenção de reenvio do Asaas) + guards de transição (`paidUntil` só avança · `CHECKOUT_PAID` é no-op);
+- **Join do webhook com a conta**: via `externalReference` (`"<accountId>#<planId>"`) e índice reverso `GATEWAY#<id>` na MainTable (testado com payload real pago no sandbox);
+- **Cota FREE**: `MealQuotaService` usa a RateLimitTable com bucket `YYYY-MM` — a 21ª refeição do mês responde `403 FREE_QUOTA_EXCEEDED`;
+- Trial é **1 por conta** (`409 TRIAL_NOT_AVAILABLE`); cancelar trial é downgrade local (sem gateway), assinatura paga cancela no gateway e mantém `PRO` até `paidUntil` + carência de 3 dias.
 
 ## Pré-requisitos
 
@@ -305,7 +338,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 | Método | Url         | Descrição                                        | Autenticação |
 | ------ | ----------- | ------------------------------------------------ | ------------ |
-| GET    | `/me`       | Retorna `isOnboarded`, perfil e metas nutricionais do usuário | JWT          |
+| GET    | `/me`       | Retorna `isOnboarded`, perfil, metas, `subscription` e `mealQuota` do usuário | JWT          |
 | PUT    | `/profiles` | Atualiza o perfil do usuário                     | JWT          |
 
 ### Refeições
@@ -316,9 +349,19 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
 | GET    | `/meals/{id}`            | Retorna uma refeição por ID com detalhes dos alimentos | JWT          |
 
+### Billing
+
+| Método | Url                       | Descrição                                                                 | Autenticação                       |
+| ------ | ------------------------- | ------------------------------------------------------------------------- | ---------------------------------- |
+| GET    | `/billing/plans`          | Catálogo de planos (id, preço, ciclo, trialDays, features)                | JWT                                |
+| POST   | `/billing/trial`          | Trial de 7 dias (1 por conta) → `{ trialEndsAt }`                         | JWT                                |
+| POST   | `/billing/checkout`       | Cria checkout Asaas → `{ checkoutUrl, expiresAt }`                        | JWT                                |
+| POST   | `/billing/cancel`         | Cancela trial (local) ou assinatura (gateway) → `{ status }`              | JWT                                |
+| POST   | `/billing/webhooks/asaas` | Webhook Asaas — fonte da verdade da ativação                              | Pública (header `asaas-access-token`) |
+
 ## Rate Limit
 
-Proteção contra abuso e excesso de requests, implementada **em código** (sem AWS WAF): o decorator `@RateLimit` marca os controllers, o `lambdaHttpAdapter` aplica o enforcement centralizado e contadores **atômicos e condicionais** no DynamoDB (`RateLimitTable`) controlam a janela fixa. Requests bloqueados **não gravam** no banco, e a chave de IP é **por rota** (`RL#ip#<rota>#<ip>`).
+Proteção contra abuso e excesso de requests, implementada **em código** (sem AWS WAF): o decorator `@RateLimit` marca os controllers, o `lambdaHttpAdapter` aplica o enforcement centralizado e contadores **atômicos e condicionais** no DynamoDB (`RateLimitTable`) controlam a janela fixa. Requests bloqueados **não gravam** no banco, e as chaves de IP e de conta são **por rota** (`RL#ip#<rota>#<ip>` e `RL#account#<rota>#<id>` — rotas não disputam o mesmo contador).
 
 **Custo:** o bloqueio ocorre dentro da Lambda, então um `429` ainda custa API Gateway (~$1,59/1M na `sa-east-1`) + invocação Lambda ($0,20/1M). Requests bloqueados **não** gravam no DynamoDB e **não** chamam Cognito/OpenAI — o volume atual fica coberto pelo free tier (1M requests/mês). Bloquear antes da invocação (WAF rate-based, ~$6/mês) fica como evolução futura.
 
@@ -334,6 +377,7 @@ Proteção contra abuso e excesso de requests, implementada **em código** (sem 
 | `POST /auth/oauth/callback` | IP | 30 / 15min |
 | `POST /auth/complete-onboarding` | IP | 30 / 15min |
 | `POST /create-meal` | conta | 10 / 1h |
+| `POST /billing/trial` | conta | 5 / 1h |
 
 **Resposta `429`:**
 
@@ -490,10 +534,18 @@ com header `Retry-After` em segundos.
       "proteins": 165,
       "carbohydrates": 220,
       "fats": 73
-    }
+    },
+    "subscription": {
+      "plan": "PRO",
+      "planId": "PRO_MONTHLY",
+      "status": "TRIALING",
+      "trialEndsAt": "2026-10-13T12:00:00.000Z"
+    },
+    "mealQuota": { "used": 3, "limit": null, "remaining": null }
   }
   ```
 
+- `subscription` é `null` sem item de assinatura (plano FREE); `plan` é o **plano efetivo** derivado de `resolveEffectivePlan` (trial/pago vigente = `PRO`, vencido = `FREE`); `mealQuota.limit` é `20` no FREE e `null` (ilimitado) no PRO;
 - Para um usuário que ainda não completou o onboarding, o endpoint responde `200` com `isOnboarded: false` e `profile`/`goal` como `null` — usado pelo frontend para decidir se encaminha o usuário ao onboarding.
 - O `accountId` é resolvido a partir do claim `internalId` do access token; se o token não tiver o claim, retorna `401`. Se a conta não existir, retorna `404`.
 
@@ -599,6 +651,107 @@ com header `Retry-After` em segundos.
     -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
   ```
 
+#### Get Plans -> `/billing/plans`
+
+- Catálogo de planos (fonte única `Subscription.Plan`):
+
+  ```bash
+  curl -X GET https://xxx.execute-api.sa-east-1.amazonaws.com/billing/plans \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+  ```
+
+- Resposta esperada:
+  ```json
+  {
+    "plans": [
+      {
+        "id": "PRO_MONTHLY",
+        "name": "Pro Mensal",
+        "price": 999,
+        "cycle": "MONTHLY",
+        "trialDays": 7,
+        "features": ["Refeições AI ilimitadas"]
+      },
+      {
+        "id": "PRO_YEARLY",
+        "name": "Pro Anual",
+        "price": 9990,
+        "cycle": "YEARLY",
+        "trialDays": 7,
+        "features": ["Refeições AI ilimitadas"]
+      }
+    ]
+  }
+  ```
+
+#### Start Trial -> `/billing/trial`
+
+- Ativa o trial de 7 dias (sem gateway; 1 por conta):
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/billing/trial \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+  ```
+
+- Resposta esperada:
+  ```json
+  { "trialEndsAt": "2026-10-13T12:00:00.000Z" }
+  ```
+
+- Segunda tentativa na mesma conta → `409 TRIAL_NOT_AVAILABLE`.
+
+#### Create Checkout -> `/billing/checkout`
+
+- Cria o checkout hospedado no Asaas (mensal: recorrente só cartão; anual: Pix/cartão):
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/billing/checkout \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..." \
+    -H "Content-Type: application/json" \
+    -d '{ "planId": "PRO_MONTHLY", "returnUrl": "https://app.exemplo.com/billing/return" }'
+  ```
+
+- Resposta esperada:
+  ```json
+  { "checkoutUrl": "https://sandbox.asaas.com/checkout/...", "expiresAt": "2026-10-06T13:00:00.000Z" }
+  ```
+
+- `planId` fora do catálogo → `400`; `returnUrl` precisa passar pelo allowlist de `APP_WEB_URL` (origin exato ou prefixo `origin/`).
+
+#### Cancel -> `/billing/cancel`
+
+- Cancela trial (downgrade local) ou assinatura paga (cancela no gateway):
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/billing/cancel \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+  ```
+
+- Resposta esperada:
+  ```json
+  { "status": "CANCELED" }
+  ```
+
+- Assinatura paga mantém o acesso PRO até `paidUntil` + carência de 3 dias.
+
+#### Asaas Webhook -> `/billing/webhooks/asaas`
+
+- Recebe eventos do Asaas (rota pública; valida o header `asaas-access-token`):
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/billing/webhooks/asaas \
+    -H "Content-Type: application/json" \
+    -H "asaas-access-token: SEU_ASAAS_WEBHOOK_TOKEN" \
+    -d '{ "event": "PAYMENT_CONFIRMED", "id": "evt_1a2b3c", "payment": { "id": "pay_...", "subscription": "sub_..." } }'
+  ```
+
+- Resposta esperada:
+  ```json
+  { "received": true }
+  ```
+
+- Token inválido → `502 BILLING_ERROR`; evento desconhecido → `200` com `{"received": false}`; processamento é idempotente por `event.id` (dedup de 14 dias na RateLimitTable).
+
 ## Eventos
 
 ### Triggers Cognito
@@ -632,6 +785,7 @@ com header `Retry-After` em segundos.
 - Zod (validação de schemas);
 - esbuild (bundling);
 - OpenAI API (GPT-5.4-mini, GPT-4o-mini-transcribe);
+- Asaas (gateway de pagamento — checkout hospedado + webhook);
 - KSUID (geração de IDs únicos);
 - reflect-metadata (injeção de dependência via decorators).
 
@@ -685,6 +839,7 @@ com header `Retry-After` em segundos.
 - HTTP API v2 com CORS habilitado
 - JWT Authorizer configurado com o Cognito UserPool para rotas protegidas
 - Rotas de OAuth (`/auth/oauth/callback` e `/auth/complete-onboarding`) são públicas e validam o `accessToken` no body
+- Rotas `/billing/*` são protegidas por JWT, exceto `POST /billing/webhooks/asaas` (pública — valida o header `asaas-access-token`)
 - Suporte a domínio personalizado (opcional)
 
 ## Variáveis de Ambiente
@@ -702,6 +857,12 @@ com header `Retry-After` em segundos.
 | `MEALS_CDN_CERTIFICATE_ARN` | ARN do certificado ACM para o CDN                       | Não         |
 | `DLQ_ALARM_EMAIL`           | Email para notificações de falha no processamento       | Sim         |
 | `OPENAI_API_KEY`            | Chave de API do OpenAI                                  | Sim         |
+| `ASAAS_BASE_URL`            | URL base da API Asaas (sandbox: `https://api-sandbox.asaas.com`) | Sim |
+| `ASAAS_API_KEY`             | Chave de acesso da Asaas (enviada como `access_token`)  | Sim         |
+| `ASAAS_WEBHOOK_TOKEN`       | Token esperado no header `asaas-access-token` do webhook | Sim        |
+| `APP_WEB_URL`               | Origin do app web — allowlist da `returnUrl` do checkout | Sim        |
+| `GOOGLE_CLIENT_ID`          | Client ID do provider Google no Cognito                 | Sim (login Google) |
+| `GOOGLE_CLIENT_SECRET`      | Client secret do provider Google no Cognito             | Sim (login Google) |
 
 ### Runtime (auto-injetadas pelo Serverless)
 
@@ -735,12 +896,13 @@ src/
 │       ├── auth/              # signUp, signIn, refreshToken, forgotPassword, triggers
 │       ├── meal/              # createMeal, listMeals, getMealById, processMeal, uploadTrigger
 │       ├── account/           # me
-│       └── profile/           # updateProfile
+│       ├── profile/           # updateProfile
+│       └── billing/           # plans, trial, checkout, cancel, webhookAsaas
 │
 ├── application/               # Lógica de negócio
-│   ├── contracts/             # Controller, IEventHandler, ISQSHandler
-│   ├── entities/              # Account, Profile, Goal, Meal
-│   ├── services/              # GoalCalculator, RateLimitService
+│   ├── contracts/             # Controller, IEventHandler, ISQSHandler, IPaymentGateway
+│   ├── entities/              # Account, Profile, Goal, Meal, Subscription
+│   ├── services/              # GoalCalculator, RateLimitService, MealQuotaService
 │   ├── useCases/              # Use cases organizados por domínio
 │   ├── controllers/           # Controllers com schemas Zod
 │   ├── query/                 # Queries diretas ao DynamoDB
@@ -751,7 +913,8 @@ src/
 └── infra/                     # Integrações externas
     ├── clients/               # Clients AWS SDK (DynamoDB, Cognito, S3, SQS)
     ├── databases/dynamodb/    # Repositories + Item mappers + Unit of Work
-    ├── gateways/              # AuthGateway, MealFileStorageGateway, MealQueueGateway
+    ├── gateways/              # AuthGateway, MealFileStorageGateway, MealQueueGateway,
+    │                          # AsaasPaymentGateway
     ├── ai/                    # OpenAI integration
     │   ├── gateways/          # MealAiGateway
     │   └── prompts/           # Prompts de análise (PT-BR)

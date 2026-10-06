@@ -59,3 +59,4 @@ functions:
   - ${file(./sls/functions/meal.yml)}
   - ${file(./sls/functions/profile.yml)}
   - ${file(./sls/functions/goal.yml)}
+  - ${file(./sls/functions/billing.yml)}

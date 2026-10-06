@@ -10,6 +10,7 @@ statements:
       - !Sub "${MainTable.Arn}/index/*"
   - Effect: Allow
     Action:
+      - dynamodb:PutItem
       - dynamodb:GetItem
       - dynamodb:UpdateItem
     Resource: !GetAtt RateLimitTable.Arn

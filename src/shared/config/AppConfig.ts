@@ -13,6 +13,8 @@ export class AppConfig {
 
   readonly queue: AppConfig.Queue;
 
+  readonly billing: AppConfig.Billing;
+
   constructor() {
     this.envAuth = {
       cognito: {
@@ -40,6 +42,15 @@ export class AppConfig {
 
     this.queue = {
       mealsQueueUrl: env.MEALS_QUEUE_URL,
+    };
+
+    this.billing = {
+      asaas: {
+        apiKey: env.ASAAS_API_KEY,
+        baseUrl: env.ASAAS_BASE_URL,
+        webhookToken: env.ASAAS_WEBHOOK_TOKEN,
+      },
+      appWebUrl: env.APP_WEB_URL,
     };
   }
 
@@ -72,5 +83,14 @@ namespace AppConfig {
 
   export type Queue = {
     mealsQueueUrl: string;
+  }
+
+  export type Billing = {
+    asaas: {
+      apiKey: string;
+      webhookToken: string;
+      baseUrl: string;
+    },
+    appWebUrl: string;
   }
 }

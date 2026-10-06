@@ -1,5 +1,6 @@
 
 export type Constructor<T = any> = new (...args: any[]) => T;
+export type AbstractConstructor<T = any> = abstract new (...args: any[]) => T;
 
 export class Registry {
   private static instance: Registry;
@@ -17,6 +18,11 @@ export class Registry {
 
   private providers = new Map<string, Constructor>();
   private instanceCache = new Map<string, unknown>();
+  private bindings = new Map<string, Constructor>();
+
+  bind(token: AbstractConstructor, impl: Constructor) {
+    this.bindings.set(token.name, impl);
+  }
 
   register(impl: Constructor) {
     const token = impl.name;
@@ -28,14 +34,14 @@ export class Registry {
     this.providers.set(token, impl);
   }
 
-  resolver<T>(impl: Constructor<T>): T {
+  resolver<T>(impl: AbstractConstructor<T>): T {
     const token = impl.name;
 
     if (this.instanceCache.has(token)) {
       return this.instanceCache.get(token) as T;
     }
 
-    const constructor = this.providers.get(token);
+    const constructor = this.bindings.get(token) ?? this.providers.get(token);
 
     if (!constructor) {
       throw new Error(`${token} is not registered.`);
