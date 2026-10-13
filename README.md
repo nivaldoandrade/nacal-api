@@ -15,7 +15,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Alarmes**: Notificação por email quando refeições falham (Dead Letter Queue);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
-- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro ilimitado; **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração;
+- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro ilimitado; **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas, rate limit por IP (120/60s) e `reservedConcurrency: 5`;
 
 ## Arquitetura
 
@@ -146,7 +146,8 @@ CHECKOUT:
   App abre checkoutUrl no browser ──► usuário paga
 
 WEBHOOK (fonte da verdade):
-  Asaas ──POST /billing/webhooks/asaas──► header asaas-access-token ──►
+  Asaas ──POST /billing/webhooks/asaas──► allowlist de IP (403) ──►
+      rate limit IP 120/60s (429) ──► header asaas-access-token ──►
       PAYMENT_CONFIRMED / RECEIVED ──► status ACTIVE + paidUntil (+ciclo) ──►
       app invalida ['accounts'] e reflete via GET /me
 
@@ -156,6 +157,7 @@ EXPIRAÇÃO (lazy, sem scheduler):
 
 **Observações:**
 - **Idempotência**: dedup por `event.id` na RateLimitTable (TTL 14d = retenção de reenvio do Asaas) + guards de transição (`paidUntil` só avança · `CHECKOUT_PAID` é no-op);
+- **Endurecimento da rota pública**: 3 camadas: allowlist dos **IPs oficiais do Asaas** (env `ASAAS_WEBHOOK_ALLOWED_IPS`; default = 4 IPs de produção, `*` desabilita em sandbox/dev; checada no adapter **antes** de tudo → `403`), token `asaas-access-token` (`502` se inválido), rate limit por IP 120/60s (`429` + `Retry-After`) e `reservedConcurrency: 5` na função (teto de custo/concorrência);
 - **Join do webhook com a conta**: via `externalReference` (`"<accountId>#<planId>"`) e índice reverso `GATEWAY#<id>` na MainTable (testado com payload real pago no sandbox);
 - **Cota FREE**: `MealQuotaService` usa a RateLimitTable com bucket `YYYY-MM` — a 21ª refeição do mês responde `403 FREE_QUOTA_EXCEEDED`;
 - Trial é **1 por conta** (`409 TRIAL_NOT_AVAILABLE`); cancelar trial é downgrade local (sem gateway), assinatura paga cancela no gateway e mantém `PRO` até `paidUntil` + carência de 3 dias.
@@ -378,6 +380,7 @@ Proteção contra abuso e excesso de requests, implementada **em código** (sem 
 | `POST /auth/complete-onboarding` | IP | 30 / 15min |
 | `POST /create-meal` | conta | 10 / 1h |
 | `POST /billing/trial` | conta | 5 / 1h |
+| `POST /billing/webhooks/asaas` | IP | 120 / 60s |
 
 **Resposta `429`:**
 
@@ -750,7 +753,7 @@ com header `Retry-After` em segundos.
   { "received": true }
   ```
 
-- Token inválido → `502 BILLING_ERROR`; evento desconhecido → `200` com `{"received": false}`; processamento é idempotente por `event.id` (dedup de 14 dias na RateLimitTable).
+- IP fora da allowlist → `403 FORBIDDEN` (checado antes do rate limit e do token); acima de 120 req/min no mesmo IP → `429` com `Retry-After`; token inválido → `502 BILLING_ERROR`; evento desconhecido → `200` com `{"received": false}`; processamento é idempotente por `event.id` (dedup de 14 dias na RateLimitTable).
 
 ## Eventos
 
@@ -839,7 +842,7 @@ com header `Retry-After` em segundos.
 - HTTP API v2 com CORS habilitado
 - JWT Authorizer configurado com o Cognito UserPool para rotas protegidas
 - Rotas de OAuth (`/auth/oauth/callback` e `/auth/complete-onboarding`) são públicas e validam o `accessToken` no body
-- Rotas `/billing/*` são protegidas por JWT, exceto `POST /billing/webhooks/asaas` (pública — valida o header `asaas-access-token`)
+- Rotas `/billing/*` são protegidas por JWT, exceto `POST /billing/webhooks/asaas` (pública, endurecida com allowlist de IP dos IPs oficiais do Asaas, rate limit por IP 120/60s e `reservedConcurrency: 5` na função; valida o header `asaas-access-token`)
 - Suporte a domínio personalizado (opcional)
 
 ## Variáveis de Ambiente
@@ -860,6 +863,7 @@ com header `Retry-After` em segundos.
 | `ASAAS_BASE_URL`            | URL base da API Asaas (sandbox: `https://api-sandbox.asaas.com`) | Sim |
 | `ASAAS_API_KEY`             | Chave de acesso da Asaas (enviada como `access_token`)  | Sim         |
 | `ASAAS_WEBHOOK_TOKEN`       | Token esperado no header `asaas-access-token` do webhook | Sim        |
+| `ASAAS_WEBHOOK_ALLOWED_IPS` | Allowlist de IPs de origem do webhook (separada por vírgula). Padrão: IPs oficiais de produção do Asaas. `*` desabilita (dev/sandbox) | Não (default = 4 IPs de produção) |
 | `APP_WEB_URL`               | Origin do app web — allowlist da `returnUrl` do checkout | Sim        |
 | `GOOGLE_CLIENT_ID`          | Client ID do provider Google no Cognito                 | Sim (login Google) |
 | `GOOGLE_CLIENT_SECRET`      | Client secret do provider Google no Cognito             | Sim (login Google) |
@@ -882,7 +886,7 @@ com header `Retry-After` em segundos.
 ```
 src/
 ├── kernel/                    # Camada de framework/DI
-│   ├── decorators/            # @Injectable(), @Schema(), @RateLimit()
+│   ├── decorators/            # @Injectable(), @Schema(), @RateLimit(), @IpAllowlist()
 │   └── di/                    # Registry (container de DI singleton)
 │
 ├── shared/                    # Utilitários compartilhados
@@ -928,6 +932,7 @@ src/
 - **Schema Validation Decorator**: `@Schema(zodSchema)` nos controllers para validação automática do request body;
 - **Controller Pattern**: Classe abstrata `Controller<'public' | 'private'>` distinguindo rotas autenticadas vs públicas;
 - **Rate Limit declarativo**: decorator `@RateLimit` (IP/email/conta) nos controllers + enforce centralizado no `lambdaHttpAdapter` com contadores atômicos condicionais no DynamoDB;
+- **IP Allowlist declarativo**: decorator `@IpAllowlist((config) => …)` apontando a lista de IPs permitida + enforcement no `lambdaHttpAdapter` (403 antes do rate limit), usado pelo webhook Asaas com os IPs oficiais do gateway (env `ASAAS_WEBHOOK_ALLOWED_IPS`);
 - **Unit of Work**: Transações DynamoDB (`TransactWriteCommand`) para escrita atômica de múltiplas entidades;
 - **Event-Driven Processing**: S3 Event -> SQS -> Lambda para processamento assíncrono de refeições;
 - **Single-Table DynamoDB**: Todas as entidades em uma tabela com chaves compostas e GSIs;
