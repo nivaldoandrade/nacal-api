@@ -32,6 +32,7 @@ cancel:
           name: CognitoAuthorizer
 webhookAsaas:
   handler: src/main/functions/billing/webhookAsaas.handler
+  reservedConcurrency: 5
   events:
     - httpApi:
         path: /billing/webhooks/asaas

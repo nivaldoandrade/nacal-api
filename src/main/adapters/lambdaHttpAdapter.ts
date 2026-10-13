@@ -7,10 +7,12 @@ import { HttpError } from '@application/errors/http/HttpError';
 import { RateLimitExceeded } from '@application/errors/http/RateLimitExceeded';
 import { RateLimitService } from '@application/services/RateLimitService';
 import { RateLimitRule, getRateLimitRules } from '@kernel/decorators/RateLimit';
+import { getIpAllowlist } from '@kernel/decorators/IpAllowlist';
 import { Constructor, Registry } from '@kernel/di/Registry';
 import { lambdaHttpBodyParser } from '@main/utils/lambdaHttpBodyParser';
 import { lambdaHttpErrorResponse } from '@main/utils/lambdaHttpErrorResponse';
 import { lambdaHttpResponse } from '@main/utils/lambdaHttpResponse';
+import { AppConfig } from '@shared/config/AppConfig';
 
 type Event = APIGatewayProxyEventV2 | APIGatewayProxyEventV2WithJWTAuthorizer
 
@@ -38,6 +40,21 @@ export function lambdaHttpAdapter(controllerImpl: Constructor<Controller<'privat
       }
 
       const controller = Registry.getInstance().resolver(controllerImpl);
+
+      const ipAllowlist = getIpAllowlist(controller);
+
+      if (ipAllowlist) {
+        const appConfig = Registry.getInstance().resolver(AppConfig);
+        const allowedIps = ipAllowlist(appConfig);
+
+        if (allowedIps.length > 0 && !allowedIps.includes(resolveClientIp(event))) {
+          return lambdaHttpErrorResponse({
+            statusCode: 403,
+            code: 'FORBIDDEN',
+            message: 'IP not allowed.',
+          });
+        }
+      }
 
       const request = accountId
         ? { body, params, queryParams, headers, rawBody, accountId }
@@ -123,6 +140,10 @@ export function lambdaHttpAdapter(controllerImpl: Constructor<Controller<'privat
   };
 }
 
+function resolveClientIp(event: Event): string {
+  return event.requestContext.http.sourceIp;
+}
+
 function resolveRateLimitKey(
   rule: RateLimitRule,
   request: Controller.Request<'private' | 'public'>,
@@ -130,7 +151,7 @@ function resolveRateLimitKey(
 ): string | undefined {
   switch (rule.scope) {
     case 'ip':
-      return `${event.routeKey}#${event.requestContext.http.sourceIp}`;
+      return `${event.routeKey}#${resolveClientIp(event)}`;
     case 'account':
       return 'accountId' in request ? `${event.routeKey}#${request.accountId}` : undefined;
     case 'email': {

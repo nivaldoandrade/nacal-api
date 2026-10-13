@@ -1,6 +1,13 @@
 import { Injectable } from '@kernel/decorators/Injectable';
 import { env } from '@shared/config/env';
 
+const ASAAS_WEBHOOK_PRODUCTION_IPS = [
+  '52.67.12.206',
+  '18.230.8.159',
+  '54.94.136.112',
+  '54.94.183.101',
+];
+
 @Injectable()
 export class AppConfig {
   readonly envAuth: AppConfig.EnvAuth;
@@ -49,11 +56,26 @@ export class AppConfig {
         apiKey: env.ASAAS_API_KEY,
         baseUrl: env.ASAAS_BASE_URL,
         webhookToken: env.ASAAS_WEBHOOK_TOKEN,
+        webhookAllowedIps: parseAsaasWebhookAllowedIps(env.ASAAS_WEBHOOK_ALLOWED_IPS),
       },
       appWebUrl: env.APP_WEB_URL,
     };
   }
 
+}
+
+function parseAsaasWebhookAllowedIps(raw: string | undefined): string[] {
+  const value = raw?.trim() ?? '';
+
+  if (value === '*') {
+    return [];
+  }
+
+  if (!value) {
+    return ASAAS_WEBHOOK_PRODUCTION_IPS;
+  }
+
+  return value.split(',').map((ip) => ip.trim()).filter(Boolean);
 }
 
 namespace AppConfig {
@@ -90,6 +112,7 @@ namespace AppConfig {
       apiKey: string;
       webhookToken: string;
       baseUrl: string;
+      webhookAllowedIps: string[];
     },
     appWebUrl: string;
   }
