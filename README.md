@@ -9,7 +9,8 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Perfil do usuário**: Cadastro de dados pessoais (nome, data de nascimento, gênero, altura, peso, nível de atividade e objetivo);
 - **Metas nutricionais**: Cálculo automático de calorias e macronutrientes diários com base no perfil (TDEE/BMR);
 - **Upload de refeições**: Upload de fotos (JPEG) ou áudios (M4A, WebM) via Presigned POST do S3;
-- **Análise por IA**: Identificação automática de alimentos com quantities e macronutrientes via IA;
+- **Análise por IA**: Identificação automática de alimentos com quantidades e macronutrientes via IA;
+- **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio sobrepondo o horário;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com retry automático;
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
@@ -69,8 +70,8 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 ## Fluxo de Processamento de Refeições
 
 ### 1. Upload e Criação
-1. Usuário envia `POST /create-meal` com `{ contentType, fileSize }`;
-2. Backend cria a refeição no DynamoDB (status: `PENDING`) e retorna um `mealId` junto com dados do Presigned POST (base64);
+1. Usuário envia `POST /create-meal` com `{ contentType, fileSize, timeZone? }`;
+2. Backend cria a refeição no DynamoDB (status: `UPLOADING`) e retorna um `mealId` junto com dados do Presigned POST (base64);
 3. Frontend faz upload direto para o S3 usando o Presigned POST;
 4. S3 recebe o arquivo e dispara evento `ObjectCreated`.
 
@@ -80,9 +81,24 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 7. Lambda `processMeal` consome a mensagem da fila SQS;
 8. Para **imagens**: envia para o GPT-5.4-mini com prompt de análise visual;
 9. Para **áudios**: transcreve via GPT-4o-mini-transcribe, depois envia o texto para o GPT-5.4-mini;
-10. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras);
-11. Backend calcula calorias e atualiza o DynamoDB com status `SUCCESS`;
+10. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e, para áudios, um `mealType` opcional quando o usuário declara a refeição;
+11. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
 12. Em caso de falha, o SQS faz retry automático (até 2 vezes). Após esgotar, vai para a Dead Letter Queue e dispara alarme por email.
+
+## Classificação da Refeição (nome e ícone)
+
+O nome e o ícone **não** são definidos pela IA: a API os deriva do **horário da refeição interpretado no fuso do usuário** (o `timeZone` IANA enviado no `POST /create-meal`, com fallback `America/Sao_Paulo`). Quando o usuário **declara explicitamente** a refeição no áudio (por exemplo, "almocei", "estou jantando"), a IA devolve um `mealType` opcional que **sobrepõe** o horário; menções genéricas ou negadas ficam como `null` e caem no horário.
+
+| Horário (local) | Nome            | Ícone | `mealType` da IA  |
+| --------------- | --------------- | ----- | ----------------- |
+| 04:00–10:59     | Café da manhã   | ☕    | `BREAKFAST`       |
+| 11:00–14:59     | Almoço          | 🍽️    | `LUNCH`           |
+| 15:00–17:59     | Lanche da tarde | 🍎    | `AFTERNOON_SNACK` |
+| 18:00–22:59     | Jantar          | 🍲    | `DINNER`          |
+| 23:00–03:59     | Ceia            | 🌙    | `SUPPER`          |
+
+- O horário é calculado com `Intl` no fuso recebido; `timeZone` inválido ou ausente cai no default `America/Sao_Paulo`.
+- A lógica vive em `MealNamingService` (`application/services/`); a IA retorna apenas os alimentos/macros e o `mealType` opcional.
 
 ## Fluxo de Autenticação OAuth (Google)
 
@@ -347,7 +363,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 | Método | Url                      | Descrição                                              | Autenticação |
 | ------ | ------------------------ | ------------------------------------------------------ | ------------ |
-| POST   | `/create-meal`           | Cria uma refeição e retorna Presigned POST para upload | JWT          |
+| POST   | `/create-meal`           | Cria uma refeição (recebe `timeZone` p/ nome/ícone) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
 | GET    | `/meals/{id}`            | Retorna uma refeição por ID com detalhes dos alimentos | JWT          |
 
@@ -562,23 +578,26 @@ com header `Retry-After` em segundos.
     -H "Content-Type: application/json" \
     -d '{
       "contentType": "image/jpeg",
-      "fileSize": 5242880
+      "fileSize": 5242880,
+      "timeZone": "America/Sao_Paulo"
     }'
   ```
+
+- `timeZone` é a zona IANA do dispositivo (ex.: `America/Sao_Paulo`, `Europe/Lisbon`), usada para nomear a refeição; é opcional e cai em `America/Sao_Paulo` se ausente/inválida.
 
 - Resposta esperada:
   ```json
   {
     "mealId": "2CkS0wZr5cY3xK1mN7jQ9bT2vL",
-    "presignedPost": "eyJ1cmwiOiJodHRwczovL2FwaS1k..."
+    "uploadSignature": "eyJ1cmwiOiJodHRwczovL2FwaS1k..."
   }
   ```
 
 - Upload no frontend (JavaScript):
 
   ```javascript
-  // Decodificar o presignedPost de base64
-  const presignedData = JSON.parse(atob(response.presignedPost));
+  // Decodificar a assinatura (uploadSignature) de base64
+  const presignedData = JSON.parse(atob(response.uploadSignature));
 
   const formData = new FormData();
 
@@ -609,10 +628,9 @@ com header `Retry-After` em segundos.
   {
     "meals": [
       {
-        "mealId": "2CkS0wZr5cY3xK1mN7jQ9bT2vL",
-        "status": "SUCCESS",
-        "inputType": "IMAGE",
-        "fileUrl": "https://cdn.nafoodiary.com/meals/2CkS0wZr5cY3xK1mN7jQ9bT2vL.jpg",
+        "id": "2CkS0wZr5cY3xK1mN7jQ9bT2vL",
+        "name": "Almoço",
+        "icon": "🍽️",
         "foods": [
           {
             "name": "Arroz branco",
@@ -639,7 +657,7 @@ com header `Retry-After` em segundos.
             "calories": 240
           }
         ],
-        "createdAt": "2026-08-26T12:00:00.000Z"
+        "createdAt": "2026-08-26T15:00:00.000Z"
       }
     ]
   }
@@ -906,7 +924,7 @@ src/
 ├── application/               # Lógica de negócio
 │   ├── contracts/             # Controller, IEventHandler, ISQSHandler, IPaymentGateway
 │   ├── entities/              # Account, Profile, Goal, Meal, Subscription
-│   ├── services/              # GoalCalculator, RateLimitService, MealQuotaService
+│   ├── services/              # GoalCalculator, RateLimitService, MealQuotaService, MealNamingService
 │   ├── useCases/              # Use cases organizados por domínio
 │   ├── controllers/           # Controllers com schemas Zod
 │   ├── query/                 # Queries diretas ao DynamoDB
