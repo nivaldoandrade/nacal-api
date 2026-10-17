@@ -17,7 +17,7 @@ export class CreateMealUseCase {
     private readonly mealQuotaService: MealQuotaService,
   ) { }
 
-  async execute({ accountId, file }: CreateMealUseCase.Input): Promise<CreateMealUseCase.Output> {
+  async execute({ accountId, timeZone, file }: CreateMealUseCase.Input): Promise<CreateMealUseCase.Output> {
     const subscription = await this.subscriptionRepository.findByAccountId(accountId);
     const plan = Subscription.resolveEffectivePlan(subscription);
 
@@ -35,6 +35,7 @@ export class CreateMealUseCase {
       accountId,
       inputType: file.inputType,
       inputFileKey: inputFileKey,
+      timeZone,
       status: Meal.StatusType.UPLOADING,
     });
 
@@ -58,6 +59,7 @@ export class CreateMealUseCase {
 export namespace CreateMealUseCase {
   export type Input = {
     accountId: string;
+    timeZone?: string;
     file: {
       inputType: Meal.InputType;
       mimeType: Meal.MimeType;

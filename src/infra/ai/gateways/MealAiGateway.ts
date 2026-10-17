@@ -4,6 +4,7 @@ import { zodTextFormat } from 'openai/helpers/zod';
 import { z } from 'zod';
 
 import { Meal } from '@application/entities/Meal';
+import { MealNamingService } from '@application/services/MealNamingService';
 import { getImagePrompt } from '@infra/ai/prompts/getImagePrompt';
 import { getTextPrompt } from '@infra/ai/prompts/getTextPrompt';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
@@ -11,8 +12,7 @@ import { downloadByURL } from '@infra/utils/downloadByURL';
 import { Injectable } from '@kernel/decorators/Injectable';
 
 const schema = z.object({
-  name: z.string(),
-  icon: z.string(),
+  mealType: z.enum(MealNamingService.MEAL_TYPES).nullable(),
   foods: z.array(
     z.object({
       name: z.string(),
@@ -60,10 +60,6 @@ export class MealAiGateway {
             image_url: this.mealFileStorageGateway.getFileURL(meal.inputFileKey),
             detail: 'high',
           },
-          {
-            type: 'input_text',
-            text: `Meal Date: ${meal.createdAt.toISOString()}`,
-          },
         ],
       },
     ];
@@ -86,7 +82,7 @@ export class MealAiGateway {
         content: [
           {
             type: 'input_text',
-            text: `Meal date: ${meal.createdAt.toISOString()}\n\n Meal: ${audioTranscript}`,
+            text: `Meal: ${audioTranscript}`,
           },
         ],
       },

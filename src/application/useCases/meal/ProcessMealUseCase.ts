@@ -1,4 +1,5 @@
 import { Meal } from '@application/entities/Meal';
+import { MealNamingService } from '@application/services/MealNamingService';
 import { MealAiGateway } from '@infra/ai/gateways/MealAiGateway';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -39,10 +40,15 @@ export class ProcessMealUseCase {
       await this.mealRepository.save(meal);
 
       const {
-        name,
-        icon,
+        mealType,
         foods,
       } = await this.mealAiGateway.processMeal(meal);
+
+      const { name, icon } = MealNamingService.resolve(
+        meal.createdAt,
+        meal.timeZone,
+        mealType,
+      );
 
       meal.status = Meal.StatusType.SUCCESS;
       meal.name = name;

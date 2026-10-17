@@ -10,6 +10,9 @@ export const createMealSchema = z.object({
     z.positive('fileSize must be greater than 0MB.'),
     z.lte(MAX_FILE_SIZE, 'fileSize must not exceed 10MB.'),
   ),
+  timeZone: z.optional(
+    z.string().check(z.maxLength(64, 'timeZone is too long.')),
+  ),
 });
 
 export type CreateMealBody = z.infer<typeof createMealSchema>;
