@@ -6,6 +6,7 @@ export default () => ({
   sourcemap: false,
   exclude: ['@aws-sdk/*'],
   external: ['@aws-sdk/*'],
+  conditions: ['module-sync'],
   plugins: [
     esbuildPluginTsc(),
   ],

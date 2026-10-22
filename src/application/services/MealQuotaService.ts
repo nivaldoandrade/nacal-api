@@ -9,10 +9,10 @@ export class MealQuotaService {
 
   constructor(private readonly rateLimitRepository: RateLimitRepository) { }
 
-  async consume({ accountId, plan }: MealQuotaService.Input): Promise<MealQuotaService.Result> {
+  async consume({ accountId, plan }: MealQuotaService.Input): Promise<MealQuotaService.ConsumeResult> {
     const limit = plan === 'FREE' ? MealQuotaService.FREE_LIMIT : undefined;
 
-    const used = await this.rateLimitRepository.incrementCalendarMonth({
+    const { used, bucket } = await this.rateLimitRepository.incrementCalendarMonth({
       scope: 'account-monthly',
       key: accountId,
       limit,
@@ -26,7 +26,16 @@ export class MealQuotaService {
       used,
       limit: limit ?? null,
       remaining: limit === undefined ? null : Math.max(limit - used, 0),
+      quotaMonth: bucket,
     };
+  }
+
+  async refund({ accountId, quotaMonth }: MealQuotaService.RefundInput): Promise<boolean> {
+    return this.rateLimitRepository.decrementCalendarMonth({
+      scope: 'account-monthly',
+      key: accountId,
+      bucket: quotaMonth,
+    });
   }
 
   async getUsage({ accountId, plan }: MealQuotaService.Input): Promise<MealQuotaService.Result> {
@@ -55,5 +64,14 @@ export namespace MealQuotaService {
     used: number;
     limit: number | null;
     remaining: number | null;
+  }
+
+  export type ConsumeResult = Result & {
+    quotaMonth: string;
+  }
+
+  export type RefundInput = {
+    accountId: string;
+    quotaMonth: string;
   }
 }

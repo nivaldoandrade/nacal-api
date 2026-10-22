@@ -1,4 +1,3 @@
-import { Meal } from '@application/entities/Meal';
 import { ResourceNotFound } from '@application/errors/application/ResourceNotFound';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
@@ -23,9 +22,12 @@ export class MealUploadedUseCase {
       throw new ResourceNotFound('Meal not found.');
     }
 
-    meal.status = Meal.StatusType.QUEUED;
+    const queued = await this.mealRepository.markQueued({ accountId, mealId });
 
-    await this.mealRepository.save(meal);
+    if (!queued) {
+      return;
+    }
+
     await this.mealQueueGateway.publish({ accountId, mealId });
   }
 }

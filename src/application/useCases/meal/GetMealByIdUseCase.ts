@@ -19,7 +19,9 @@ export class GetMealByIdUseCase {
       throw new ResourceNotFound('Meal not found.');
     }
 
-    const inputFileUrl = this.mealFileStorageGateway.getFileURL(meal.inputFileKey);
+    const inputFileUrl = meal.status === Meal.StatusType.REJECTED
+      ? null
+      : this.mealFileStorageGateway.getFileURL(meal.inputFileKey);
 
     return {
       meal: {
@@ -27,6 +29,7 @@ export class GetMealByIdUseCase {
         name: meal.name,
         icon: meal.icon,
         status: meal.status,
+        rejectionReason: meal.rejectionReason,
         foods: meal.foods,
         inputFileType: meal.inputType,
         inputFileUrl: inputFileUrl,
@@ -46,8 +49,9 @@ namespace GetMealByIdUseCase {
     meal: {
       id: string;
       status: Meal.StatusType;
+      rejectionReason: Meal.RejectionReason | null;
       inputFileType: Meal.InputType;
-      inputFileUrl: string
+      inputFileUrl: string | null;
       name: string;
       icon: string;
       foods: Meal.FoodType[];

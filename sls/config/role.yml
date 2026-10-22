@@ -5,6 +5,7 @@ statements:
       - dynamodb:Query
       - dynamodb:GetItem
       - dynamodb:UpdateItem
+      - dynamodb:TransactWriteItems
     Resource:
       - !GetAtt MainTable.Arn
       - !Sub "${MainTable.Arn}/index/*"
@@ -13,6 +14,7 @@ statements:
       - dynamodb:PutItem
       - dynamodb:GetItem
       - dynamodb:UpdateItem
+      - dynamodb:TransactWriteItems
     Resource: !GetAtt RateLimitTable.Arn
   - Effect: Allow
     Action:
@@ -27,6 +29,7 @@ statements:
     Action:
       - s3:PutObject
       - s3:GetObject
+      - s3:DeleteObject
     Resource:
       - !GetAtt MealsBucket.Arn
       - !Sub ${MealsBucket.Arn}/*

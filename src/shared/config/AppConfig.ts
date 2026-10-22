@@ -22,6 +22,8 @@ export class AppConfig {
 
   readonly billing: AppConfig.Billing;
 
+  readonly aiGate: AppConfig.AiGate;
+
   constructor() {
     this.envAuth = {
       cognito: {
@@ -60,8 +62,55 @@ export class AppConfig {
       },
       appWebUrl: env.APP_WEB_URL,
     };
+
+    this.aiGate = {
+      enabled: parseGateEnabled(env.MEAL_GATE_ENABLED),
+      rejectThreshold: parseGateThreshold(env.MEAL_GATE_REJECT_THRESHOLD),
+      accountId: env.CLOUDFLARE_ACCOUNT_ID,
+      apiToken: env.CLOUDFLARE_AI_API_TOKEN,
+    };
   }
 
+}
+
+function parseGateEnabled(raw: string | undefined): boolean {
+  if (raw === undefined) {
+    return true;
+  }
+
+  const value = raw.trim().toLowerCase();
+
+  if (value === 'true' || value === '1') {
+    return true;
+  }
+
+  if (value === 'false' || value === '0') {
+    return false;
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn(`Invalid MEAL_GATE_ENABLED value "${raw}", disabling meal gate.`);
+
+  return false;
+}
+
+function parseGateThreshold(raw: string | undefined): number {
+  const value = raw?.trim();
+
+  if (value === undefined) {
+    return 0.3;
+  }
+
+  const threshold = Number(value);
+
+  if (value !== '' && Number.isFinite(threshold) && threshold >= 0 && threshold <= 1) {
+    return threshold;
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn(`Invalid MEAL_GATE_REJECT_THRESHOLD value "${raw}", using 0.30.`);
+
+  return 0.3;
 }
 
 function parseAsaasWebhookAllowedIps(raw: string | undefined): string[] {
@@ -115,5 +164,12 @@ namespace AppConfig {
       webhookAllowedIps: string[];
     },
     appWebUrl: string;
+  }
+
+  export type AiGate = {
+    enabled: boolean;
+    rejectThreshold: number;
+    accountId?: string;
+    apiToken?: string;
   }
 }

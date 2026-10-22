@@ -44,24 +44,21 @@ export class RateLimitRepository {
 
       return (Attributes?.count as number) ?? null;
     } catch (error) {
-      console.error(error);
       if (error instanceof ConditionalCheckFailedException) {
         return null;
       }
 
+      console.error(error);
       throw error;
     }
   }
 
-  async incrementCalendarMonth({ scope, key, limit }: RateLimitRepository.CalendarMonthParams): Promise<number | null> {
-    const { bucket, expiresAt } = this.getCalendarMonthBucket();
+  async incrementCalendarMonth({ scope, key, limit }: RateLimitRepository.CalendarMonthParams): Promise<RateLimitRepository.IncrementCalendarMonthResult> {
+    const { bucket, expiresAt } = RateLimitRepository.getCalendarMonthBucket();
 
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.rateLimitTable,
-      Key: {
-        PK: `RL#${scope}#${key}`,
-        SK: bucket,
-      },
+      Key: RateLimitRepository.getCalendarMonthKey({ scope, key, bucket }),
       UpdateExpression: 'ADD #count :inc SET #expiresAt = :expiresAt',
       ...(limit !== undefined && {
         ConditionExpression: 'attribute_not_exists(#count) OR #count < :max',
@@ -80,11 +77,45 @@ export class RateLimitRepository {
 
     try {
       const { Attributes } = await dynamodbClient.send(command);
-      return (Attributes?.count as number) ?? null;
+      return {
+        used: (Attributes?.count as number) ?? null,
+        bucket,
+      };
     } catch (error) {
-      console.error(error);
       if (error instanceof ConditionalCheckFailedException) {
-        return null;
+        return {
+          used: null,
+          bucket,
+        };
+      }
+
+      console.error(error);
+      throw error;
+    }
+  }
+
+  async decrementCalendarMonth({ scope, key, bucket }: RateLimitRepository.DecrementCalendarMonthParams): Promise<boolean> {
+    const command = new UpdateCommand({
+      TableName: this.config.db.dynamodb.rateLimitTable,
+      Key: RateLimitRepository.getCalendarMonthKey({ scope, key, bucket }),
+      UpdateExpression: 'ADD #count :dec',
+      ConditionExpression: '#count > :zero',
+      ExpressionAttributeNames: {
+        '#count': 'count',
+      },
+      ExpressionAttributeValues: {
+        ':dec': -1,
+        ':zero': 0,
+      },
+      ReturnValues: 'UPDATED_NEW',
+    });
+
+    try {
+      await dynamodbClient.send(command);
+      return true;
+    } catch (error) {
+      if (error instanceof ConditionalCheckFailedException) {
+        return false;
       }
 
       throw error;
@@ -92,26 +123,30 @@ export class RateLimitRepository {
   }
 
   async getCountCalendarMonth({ scope, key }: RateLimitRepository.CalendarMonthParams): Promise<number> {
-    const { bucket } = this.getCalendarMonthBucket();
+    const { bucket } = RateLimitRepository.getCalendarMonthBucket();
 
     const command = new GetCommand({
       TableName: this.config.db.dynamodb.rateLimitTable,
-      Key: {
-        PK: `RL#${scope}#${key}`,
-        SK: bucket,
-      },
+      Key: RateLimitRepository.getCalendarMonthKey({ scope, key, bucket }),
     });
 
     const { Item } = await dynamodbClient.send(command);
     return (Item?.count as number) ?? 0;
   }
 
-  private getCalendarMonthBucket(): { bucket: string; expiresAt: number } {
+  static getCalendarMonthBucket(): { bucket: string; expiresAt: number } {
     const now = new Date();
     const bucket = now.toISOString().slice(0, 7);
     const startNextMonth = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
     const expiresAt = Math.floor(startNextMonth / 1000) + 7 * 86_400;
     return { bucket, expiresAt };
+  }
+
+  static getCalendarMonthKey({ scope, key, bucket }: RateLimitRepository.CalendarMonthKeyParams): RateLimitRepository.CalendarMonthKey {
+    return {
+      PK: `RL#${scope}#${key}`,
+      SK: bucket,
+    };
   }
 
   async hasWebhookEvent({ scope, key }: RateLimitRepository.WebhookEventParams): Promise<boolean> {
@@ -156,6 +191,28 @@ export namespace RateLimitRepository {
     scope: 'account-monthly';
     key: string;
     limit?: number;
+  };
+
+  export type DecrementCalendarMonthParams = {
+    scope: 'account-monthly';
+    key: string;
+    bucket: string;
+  };
+
+  export type IncrementCalendarMonthResult = {
+    used: number | null;
+    bucket: string;
+  };
+
+  export type CalendarMonthKeyParams = {
+    scope: 'account-monthly';
+    key: string;
+    bucket: string;
+  };
+
+  export type CalendarMonthKey = {
+    PK: `RL#${string}#${string}`;
+    SK: string;
   };
 
   export type WebhookEventParams = {

@@ -4,6 +4,7 @@ import { zodTextFormat } from 'openai/helpers/zod';
 import { z } from 'zod';
 
 import { Meal } from '@application/entities/Meal';
+import { MealRejectedError } from '@application/errors/MealRejectedError';
 import { MealNamingService } from '@application/services/MealNamingService';
 import { getImagePrompt } from '@infra/ai/prompts/getImagePrompt';
 import { getTextPrompt } from '@infra/ai/prompts/getTextPrompt';
@@ -41,6 +42,10 @@ export class MealAiGateway {
 
       return processedMeal;
     } catch (error) {
+      if (error instanceof MealRejectedError) {
+        throw error;
+      }
+
       throw new Error(`[OPEN AI] ${error}`, { cause: error });
     }
 
@@ -111,7 +116,7 @@ export class MealAiGateway {
 
     if (!text.trim()) {
       console.error(`OPEN AI transcription response: ${JSON.stringify(transcription, null, 2)}`);
-      throw new Error(`OPEN AI error in meal: ${meal.id}`);
+      throw new MealRejectedError(Meal.RejectionReason.NO_FOOD_DETECTED);
     }
 
     return text;

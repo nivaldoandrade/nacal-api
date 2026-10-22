@@ -3,13 +3,15 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: ${self:service}-${sls:stage}-MealsQueue
-      VisibilityTimeout: 130
+      # Must stay above the processMeal timeout (120s) and Meal.PROCESSING_LEASE_SECONDS (130s).
+      VisibilityTimeout: 180
       ReceiveMessageWaitTimeSeconds: 20
       RedriveAllowPolicy:
         redrivePermission: denyAll
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt MealsDLQ.Arn
-        maxReceiveCount: 2
+        # Must stay above Meal.MAX_ATTEMPTS (2).
+        maxReceiveCount: 3
 
   MealsDLQ:
     Type: AWS::SQS::Queue

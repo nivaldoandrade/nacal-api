@@ -24,6 +24,7 @@ export class MealItem {
     return new MealItem({
       ...meal,
       createdAt: meal.createdAt.toISOString(),
+      rejectedAt: meal.rejectedAt?.toISOString() ?? null,
     });
   }
 
@@ -31,6 +32,7 @@ export class MealItem {
     return new Meal({
       ...mealIdAttr,
       createdAt: new Date(mealIdAttr.createdAt),
+      rejectedAt: mealIdAttr.rejectedAt ? new Date(mealIdAttr.rejectedAt) : null,
     });
   }
 
@@ -97,7 +99,13 @@ export namespace MealItem {
     name: string;
     icon?: string;
     foods?: Meal.FoodType[];
+    rejectionReason?: Meal.RejectionReason | null;
+    gateScore?: number | null;
+    quotaMonth?: string | null;
+    quotaRefunded?: boolean;
+    leaseExpiresAt?: number | null;
     createdAt: string;
+    rejectedAt?: string | null;
   }
 
   export type ItemType = Keys & Attributes & {

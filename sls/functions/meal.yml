@@ -25,6 +25,7 @@ getMealById:
 processMeal:
   handler: src/main/functions/meal/processMeal.handler
   memorySize: 1024
+  # Must stay below Meal.PROCESSING_LEASE_SECONDS (130s).
   timeout: 120
   events:
     - sqs:

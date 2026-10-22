@@ -15,6 +15,10 @@ export const envSchema = z.object({
   ASAAS_WEBHOOK_TOKEN: z.string().check(z.trim(), z.minLength(1)),
   ASAAS_WEBHOOK_ALLOWED_IPS: z.optional(z.string()),
   APP_WEB_URL: z.string().check(z.trim(), z.minLength(1)),
+  CLOUDFLARE_ACCOUNT_ID: z.optional(z.string()),
+  CLOUDFLARE_AI_API_TOKEN: z.optional(z.string()),
+  MEAL_GATE_ENABLED: z.optional(z.string()),
+  MEAL_GATE_REJECT_THRESHOLD: z.optional(z.string()),
 });
 
 export const env = envSchema.parse(process.env);

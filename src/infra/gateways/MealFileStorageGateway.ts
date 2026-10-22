@@ -1,7 +1,7 @@
 import { URL } from 'node:url';
 
 import { Meal } from '@application/entities/Meal';
-import { HeadObjectCommand } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { s3Client } from '@infra/clients/s3Client';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -32,6 +32,30 @@ export class MealFileStorageGateway {
     );
 
     return url.toString();
+  }
+
+  async getObjectBytes(fileKey: string): Promise<Buffer> {
+    const command = new GetObjectCommand({
+      Bucket: this.config.storage.mealsBucketName,
+      Key: fileKey,
+    });
+
+    const { Body } = await s3Client.send(command);
+
+    if (!Body) {
+      throw new Error(`Cannot read file: ${fileKey}.`);
+    }
+
+    return Buffer.from(await Body.transformToByteArray());
+  }
+
+  async deleteObject(fileKey: string): Promise<void> {
+    const command = new DeleteObjectCommand({
+      Bucket: this.config.storage.mealsBucketName,
+      Key: fileKey,
+    });
+
+    await s3Client.send(command);
   }
 
   async getMetadata(fileKey: string): Promise<MealFileStorageGateway.GetMetadada['result']> {

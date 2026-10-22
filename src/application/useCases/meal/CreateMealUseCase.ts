@@ -21,38 +21,50 @@ export class CreateMealUseCase {
     const subscription = await this.subscriptionRepository.findByAccountId(accountId);
     const plan = Subscription.resolveEffectivePlan(subscription);
 
-    await this.mealQuotaService.consume({ accountId, plan });
+    const { quotaMonth } = await this.mealQuotaService.consume({ accountId, plan });
 
-    const mealId = generateUniqueId();
+    try {
+      const mealId = generateUniqueId();
 
-    const inputFileKey = MealFileStorageGateway.generateInputFileKey({
-      accountId,
-      mimeType: file.mimeType,
-    });
+      const inputFileKey = MealFileStorageGateway.generateInputFileKey({
+        accountId,
+        mimeType: file.mimeType,
+      });
 
-    const meal = new Meal({
-      id: mealId,
-      accountId,
-      inputType: file.inputType,
-      inputFileKey: inputFileKey,
-      timeZone,
-      status: Meal.StatusType.UPLOADING,
-    });
+      const meal = new Meal({
+        id: mealId,
+        accountId,
+        inputType: file.inputType,
+        inputFileKey: inputFileKey,
+        timeZone,
+        status: Meal.StatusType.UPLOADING,
+        quotaMonth,
+      });
 
-    const { uploadSignature } = await this.mealStorageGateway.getPOST({
-      accountId,
-      mealId,
-      inputFileKey,
-      mimeType: file.mimeType,
-      fileSize: file.size,
-    });
+      const { uploadSignature } = await this.mealStorageGateway.getPOST({
+        accountId,
+        mealId,
+        inputFileKey,
+        mimeType: file.mimeType,
+        fileSize: file.size,
+      });
 
-    await this.mealRepository.create(meal);
+      await this.mealRepository.create(meal);
 
-    return {
-      mealId,
-      uploadSignature,
-    };
+      return {
+        mealId,
+        uploadSignature,
+      };
+    } catch (error) {
+      try {
+        await this.mealQuotaService.refund({ accountId, quotaMonth });
+      } catch (refundError) {
+        // eslint-disable-next-line no-console
+        console.error(`Failed to refund meal quota for account ${accountId}:`, refundError);
+      }
+
+      throw error;
+    }
   }
 }
 

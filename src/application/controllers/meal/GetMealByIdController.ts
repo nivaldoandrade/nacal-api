@@ -30,6 +30,7 @@ export class GetMealByIdController extends Controller<'private'> {
         name: meal.name,
         icon: meal.icon,
         status: meal.status,
+        rejectionReason: meal.rejectionReason,
         foods: meal.foods,
         inputFileType: meal.inputFileType,
         inputFileUrl: meal.inputFileUrl,
@@ -49,8 +50,9 @@ export namespace GetMealByIdController {
   export type Response = {
     id: string;
     status: Meal.StatusType;
+    rejectionReason: Meal.RejectionReason | null;
     inputFileType: Meal.InputType;
-    inputFileUrl: string;
+    inputFileUrl: string | null;
     name: string;
     icon: string;
     foods: Meal.FoodType[];
