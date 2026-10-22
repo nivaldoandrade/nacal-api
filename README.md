@@ -9,12 +9,14 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Perfil do usuário**: Cadastro de dados pessoais (nome, data de nascimento, gênero, altura, peso, nível de atividade e objetivo);
 - **Metas nutricionais**: Cálculo automático de calorias e macronutrientes diários com base no perfil (TDEE/BMR);
 - **Upload de refeições**: Upload de fotos (JPEG) ou áudios (M4A, WebM) via Presigned POST do S3;
+- **Validação de mídia**: Confere assinatura real do arquivo, tamanho e duração antes de chamar a IA; arquivos inválidos viram `REJECTED` (`INVALID_FILE`) com estorno de cota;
+- **Gate de foto**: Pré-filtro no Cloudflare Workers AI (Clef-flash) rejeita fotos que claramente não são comida/bebida antes da OpenAI; falhas do gate são fail-open;
 - **Análise por IA**: Identificação automática de alimentos com quantidades e macronutrientes via IA;
 - **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio sobrepondo o horário;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
-- **Processamento assíncrono**: Fila SQS para processamento de refeições com retry automático;
+- **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
-- **Alarmes**: Notificação por email quando refeições falham (Dead Letter Queue);
+- **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas da fila (Dead Letter Queue);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
 - **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro ilimitado; **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas, rate limit por IP (120/60s) e `reservedConcurrency: 5`;
 
@@ -67,6 +69,8 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
                                                               └──────────────┘
 ```
 
+> Fotos passam por um gate opcional no Cloudflare Workers AI antes da OpenAI; detalhes em [Validação, gate e rejeição](#validação-gate-e-rejeição).
+
 ## Fluxo de Processamento de Refeições
 
 ### 1. Upload e Criação
@@ -78,12 +82,38 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 ### 2. Processamento Assíncrono
 5. Lambda `newMealUploadedTrigger` é acionada pelo evento S3;
 6. Atualiza o status da refeição para `QUEUED` e publica mensagem na fila SQS;
-7. Lambda `processMeal` consome a mensagem da fila SQS;
-8. Para **imagens**: envia para o GPT-5.4-mini com prompt de análise visual;
-9. Para **áudios**: transcreve via GPT-4o-mini-transcribe, depois envia o texto para o GPT-5.4-mini;
-10. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e, para áudios, um `mealType` opcional quando o usuário declara a refeição;
-11. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
-12. Em caso de falha, o SQS faz retry automático (até 2 vezes). Após esgotar, vai para a Dead Letter Queue e dispara alarme por email.
+7. Lambda `processMeal` consome a mensagem, reivindica a refeição com lease condicional (`PROCESSING`) e baixa o arquivo do S3;
+8. Valida o arquivo real (assinatura/magic bytes), tamanho e duração: foto JPEG até 10 MB; áudio M4A/WebM até 2 MB e 1–32s. Arquivo inválido vira `REJECTED` (`INVALID_FILE`), com estorno de cota e remoção do arquivo;
+9. Para **fotos**, o gate Clef-flash avalia se há comida/bebida. Score abaixo de `0.30` vira `REJECTED` (`NOT_A_MEAL`), com estorno de cota; falha, timeout ou resposta inválida do gate não bloqueiam o processamento (fail-open);
+10. Para **áudios**, transcreve via GPT-4o-mini-transcribe, depois envia o texto para o GPT-5.4-mini. Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
+11. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e, para áudios, um `mealType` opcional quando o usuário declara a refeição;
+12. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
+13. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
+
+## Validação, gate e rejeição
+
+### Validação do arquivo
+
+- **Fotos**: apenas JPEG real (assinatura `FF D8 FF`), até **10 MB** e com dimensões válidas. O app normaliza outras imagens para JPEG antes do upload;
+- **Áudios**: apenas M4A ou WebM, até **2 MB** e entre **1 e 32 segundos**; o container e a assinatura do arquivo são conferidos;
+- Arquivo inválido, corrompido ou fora dos limites vira `REJECTED` com `rejectionReason: INVALID_FILE`, a cota é estornada e o arquivo é removido do S3.
+
+### Gate de foto (Cloudflare Workers AI)
+
+- Roda apenas para fotos, antes da chamada de visão da OpenAI;
+- Usa o modelo `@cf/cloudflare/clef-flash` e o score `result.answers.is_food_or_drink.noul`;
+- `score < MEAL_GATE_REJECT_THRESHOLD` → `REJECTED` com `rejectionReason: NOT_A_MEAL`, cota estornada e arquivo removido;
+- É **fail-open**: sem credenciais, timeout (8s), `429`, `5xx`, resposta inválida ou imagem acima de 4 MiB/16 MP, o gate retorna `SKIP` e a OpenAI processa normalmente;
+- Configuração: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_AI_API_TOKEN` (permissões `Workers AI - Read` e `Workers AI - Edit`), `MEAL_GATE_ENABLED` (default `true`) e `MEAL_GATE_REJECT_THRESHOLD` (default `0.30`).
+
+### Status e estorno
+
+| Status | Quando acontece | Cota | `inputFileUrl` |
+| ------ | --------------- | ---- | -------------- |
+| `REJECTED` | Arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos | Estornada | `null` |
+| `FAILED` | Falha de plataforma após 2 tentativas (OpenAI, timeout, S3, resposta inválida) | Não estornada | URL do arquivo |
+
+Os motivos de rejeição são `INVALID_FILE`, `NOT_A_MEAL` e `NO_FOOD_DETECTED`. Uma tentativa rejeitada continua contando no rate limit de `POST /create-meal`.
 
 ## Classificação da Refeição (nome e ícone)
 
@@ -283,6 +313,12 @@ MEALS_CDN_CERTIFICATE_ARN=
 DLQ_ALARM_EMAIL=seu-email@exemplo.com
 
 OPENAI_API_KEY=sk-xxxxx
+
+# Cloudflare Workers AI (gate de foto, opcional)
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_AI_API_TOKEN=
+MEAL_GATE_ENABLED=true
+MEAL_GATE_REJECT_THRESHOLD=0.30
 ```
 
 ### 4. Realize o deploy na AWS
@@ -363,9 +399,9 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 | Método | Url                      | Descrição                                              | Autenticação |
 | ------ | ------------------------ | ------------------------------------------------------ | ------------ |
-| POST   | `/create-meal`           | Cria uma refeição (recebe `timeZone` p/ nome/ícone) e retorna Presigned POST | JWT          |
+| POST   | `/create-meal`           | Cria uma refeição (JPEG ≤10 MB ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
-| GET    | `/meals/{id}`            | Retorna uma refeição por ID com detalhes dos alimentos | JWT          |
+| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl` e alimentos | JWT          |
 
 ### Billing
 
@@ -397,6 +433,8 @@ Proteção contra abuso e excesso de requests, implementada **em código** (sem 
 | `POST /create-meal` | conta | 10 / 1h |
 | `POST /billing/trial` | conta | 5 / 1h |
 | `POST /billing/webhooks/asaas` | IP | 120 / 60s |
+
+`POST /create-meal` conta cada tentativa, inclusive quando a refeição termina em `REJECTED`.
 
 **Resposta `429`:**
 
@@ -584,6 +622,7 @@ com header `Retry-After` em segundos.
   ```
 
 - `timeZone` é a zona IANA do dispositivo (ex.: `America/Sao_Paulo`, `Europe/Lisbon`), usada para nomear a refeição; é opcional e cai em `America/Sao_Paulo` se ausente/inválida.
+- `contentType` aceito: `image/jpeg` (até 10 MB), `audio/m4a` ou `audio/webm` (até 2 MB e 1–32s); `fileSize` é em bytes. A validação real do conteúdo acontece no processamento e um arquivo inválido vira `REJECTED`.
 
 - Resposta esperada:
   ```json
@@ -671,6 +710,23 @@ com header `Retry-After` em segundos.
   curl -X GET https://xxx.execute-api.sa-east-1.amazonaws.com/meals/2CkS0wZr5cY3xK1mN7jQ9bT2vL \
     -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
   ```
+
+- Resposta esperada (refeição rejeitada):
+  ```json
+  {
+    "id": "2CkS0wZr5cY3xK1mN7jQ9bT2vL",
+    "status": "REJECTED",
+    "rejectionReason": "NOT_A_MEAL",
+    "inputFileType": "PICTURE",
+    "inputFileUrl": null,
+    "name": "",
+    "icon": "",
+    "foods": [],
+    "createdAt": "2026-10-22T15:00:00.000Z"
+  }
+  ```
+
+- Em `REJECTED`, `inputFileUrl` é `null` porque o arquivo é removido do S3; `rejectionReason` indica o motivo (`INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`).
 
 #### Get Plans -> `/billing/plans`
 
@@ -787,14 +843,14 @@ com header `Retry-After` em segundos.
 
 | Evento        | Função                   | Descrição                                                                                        |
 | ------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| ObjectCreated | `newMealUploadedTrigger` | Quando um arquivo é enviado ao S3, lê metados, atualiza status para QUEUED e publica na fila SQS |
+| ObjectCreated | `newMealUploadedTrigger` | Quando um arquivo é enviado ao S3, lê metadados, atualiza status para QUEUED e publica na fila SQS |
 
 ### Filas SQS
 
 | Fila       | Função        | Descrição                                                         |
 | ---------- | ------------- | ----------------------------------------------------------------- |
 | MealsQueue | `processMeal` | Consome mensagens e processa refeições via OpenAI                 |
-| MealsDLQ   | --            | Dead Letter Queue para refeições que falharam após 2 retentativas |
+| MealsDLQ   | --            | Dead Letter Queue para falhas inesperadas que esgotaram as entregas da fila |
 
 ## Tecnologias Utilizadas
 
@@ -806,7 +862,9 @@ com header `Retry-After` em segundos.
 - Zod (validação de schemas);
 - esbuild (bundling);
 - OpenAI API (GPT-5.4-mini, GPT-4o-mini-transcribe);
+- Cloudflare Workers AI (Clef-flash, gate de foto);
 - Asaas (gateway de pagamento — checkout hospedado + webhook);
+- `image-size` e `music-metadata` (validação de imagens e áudios);
 - KSUID (geração de IDs únicos);
 - reflect-metadata (injeção de dependência via decorators).
 
@@ -878,6 +936,10 @@ com header `Retry-After` em segundos.
 | `MEALS_CDN_CERTIFICATE_ARN` | ARN do certificado ACM para o CDN                       | Não         |
 | `DLQ_ALARM_EMAIL`           | Email para notificações de falha no processamento       | Sim         |
 | `OPENAI_API_KEY`            | Chave de API do OpenAI                                  | Sim         |
+| `CLOUDFLARE_ACCOUNT_ID`     | Account ID do Cloudflare Workers AI (gate de foto)      | Não (sem credenciais o gate fica `SKIP`) |
+| `CLOUDFLARE_AI_API_TOKEN`   | Token do Workers AI com permissões de leitura/edição    | Não (sem credenciais o gate fica `SKIP`) |
+| `MEAL_GATE_ENABLED`         | Liga/desliga o gate de foto (`true`/`1` ou `false`/`0`) | Não (default `true`) |
+| `MEAL_GATE_REJECT_THRESHOLD` | Score mínimo para aceitar a foto; abaixo dele, rejeita | Não (default `0.30`) |
 | `ASAAS_BASE_URL`            | URL base da API Asaas (sandbox: `https://api-sandbox.asaas.com`) | Sim |
 | `ASAAS_API_KEY`             | Chave de acesso da Asaas (enviada como `access_token`)  | Sim         |
 | `ASAAS_WEBHOOK_TOKEN`       | Token esperado no header `asaas-access-token` do webhook | Sim        |
@@ -924,21 +986,22 @@ src/
 ├── application/               # Lógica de negócio
 │   ├── contracts/             # Controller, IEventHandler, ISQSHandler, IPaymentGateway
 │   ├── entities/              # Account, Profile, Goal, Meal, Subscription
-│   ├── services/              # GoalCalculator, RateLimitService, MealQuotaService, MealNamingService
+│   ├── services/              # GoalCalculator, RateLimitService, MealQuotaService,
+│   │                          # MealNamingService, MealFileValidationService
 │   ├── useCases/              # Use cases organizados por domínio
 │   ├── controllers/           # Controllers com schemas Zod
 │   ├── query/                 # Queries diretas ao DynamoDB
 │   ├── events/                # MealUploadedEventHandler
 │   ├── queues/                # MealQueueConsumer
-│   └── errors/                # ErrorCode, ApplicationError, HttpError
+│   └── errors/                # ErrorCode, ApplicationError, HttpError, MealRejectedError
 │
 └── infra/                     # Integrações externas
     ├── clients/               # Clients AWS SDK (DynamoDB, Cognito, S3, SQS)
     ├── databases/dynamodb/    # Repositories + Item mappers + Unit of Work
     ├── gateways/              # AuthGateway, MealFileStorageGateway, MealQueueGateway,
     │                          # AsaasPaymentGateway
-    ├── ai/                    # OpenAI integration
-    │   ├── gateways/          # MealAiGateway
+    ├── ai/                    # Integrações de IA
+    │   ├── gateways/          # MealAiGateway (OpenAI) e MealGateGateway (Clef-flash)
     │   └── prompts/           # Prompts de análise (PT-BR)
     └── utils/                 # downloadByURL
 ```
@@ -1021,11 +1084,17 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 - Confirme que a permissão `s3:GetObject` está configurada na Lambda `newMealUploadedTrigger`;
 - Verifique os logs da Lambda no CloudWatch.
 
+### Refeição fica com status REJECTED
+- É uma rejeição esperada, não uma falha de infraestrutura: arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos;
+- Consulte `rejectionReason` em `GET /meals/{id}`: `INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`;
+- A cota é estornada e `inputFileUrl` retorna `null`; o arquivo é removido do S3;
+- Para falso positivo do gate de foto, revise `MEAL_GATE_REJECT_THRESHOLD` e os logs `meal_gate`/`meal_gate_error` no CloudWatch.
+
 ### Refeição fica com status FAILED
 - Verifique os logs da Lambda `processMeal` no CloudWatch;
 - Confirme que a `OPENAI_API_KEY` está configurada e é válida;
-- Verifique se o formato do arquivo é suportado (imagens: JPEG, PNG; áudios: M4A, 3GP, WebM);
-- Após 2 falhas, a refeição vai para a Dead Letter Queue e um email de alarme é enviado.
+- Verifique se o formato do arquivo é suportado (imagens: JPEG; áudios: M4A, WebM);
+- Após 2 tentativas, a refeição fica `FAILED` e a mensagem é descartada; falhas inesperadas que esgotam as 3 entregas da fila vão para a Dead Letter Queue e disparam alarme por email.
 
 ### Erro 401 / Token inválido
 - Verifique se o header `Authorization: Bearer <token>` está sendo enviado;
@@ -1050,8 +1119,9 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 
 ### Processamento de áudio falha
 - Verifique se o arquivo de áudio não está corrompido;
-- Confirme que o formato é suportado (M4A, 3GP, WebM);
-- Verifique se a `OPENAI_API_KEY` tem acesso ao modelo `gpt-4o-mini-transcribe`.
+- Confirme que o formato é suportado (M4A ou WebM, 1–32s e até 2 MB);
+- Verifique se a `OPENAI_API_KEY` tem acesso ao modelo `gpt-4o-mini-transcribe`;
+- Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), não `FAILED`.
 
 ### "The provider Google does not exist for User Pool"
 - Erro de corrida ao criar o `UserPoolClient` antes do `GoogleIdentityProvider` (o client referencia o provider `Google` por nome);
@@ -1070,6 +1140,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
   ```
 
 ### Alarme de Dead Letter Queue
+- O alarme dispara para falhas inesperadas que esgotaram as 3 entregas da fila, não para rejeições (`REJECTED`) nem para o `FAILED` tratado na 2ª tentativa;
 - Verifique o email configurado em `DLQ_ALARM_EMAIL`;
 - Analise os logs da Lambda `processMeal` para identificar a causa raiz;
 - Verifique se há falhas de rede ou timeout na chamada à API do OpenAI;
