@@ -25,7 +25,7 @@ export class AccountsRepository {
         ':GSI1SK': AccountItem.getGSI1SK(email),
       },
       Select: 'SPECIFIC_ATTRIBUTES',
-      ProjectionExpression: 'id, email, externalId, isOnboarded, createdAt',
+      ProjectionExpression: 'id, email, externalId, isOnboarded, termsAcceptedAt, termsVersion, createdAt',
     });
 
     const { Items = [] } = await dynamodbClient.send(command);

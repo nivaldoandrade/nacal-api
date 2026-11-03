@@ -3,6 +3,7 @@ import * as z from 'zod/mini';
 
 export const completeOnboardingSchema = z.object({
   accessToken: z.string().check(z.trim(), z.minLength(1)),
+  acceptedTerms: z.literal(true),
   gender: z.enum(Profile.Gender),
   height: z.number().check(z.positive()),
   weight: z.number().check(z.positive()),

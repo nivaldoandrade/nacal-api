@@ -8,6 +8,10 @@ export class Account {
 
   isOnboarded: boolean;
 
+  termsAcceptedAt: Date | null;
+
+  termsVersion: string | null;
+
   readonly createdAt: Date;
 
   constructor(attr: Account.Attributes) {
@@ -15,6 +19,8 @@ export class Account {
     this.email = attr.email;
     this.externalId = attr.externalId;
     this.isOnboarded = attr.isOnboarded;
+    this.termsAcceptedAt = attr.termsAcceptedAt ?? null;
+    this.termsVersion = attr.termsVersion ?? null;
     this.createdAt = attr.createdAt ?? new Date();
   }
 }
@@ -25,6 +31,8 @@ namespace Account {
     email: string;
     externalId: string;
     isOnboarded: boolean;
+    termsAcceptedAt?: Date | null;
+    termsVersion?: string | null;
     createdAt?: Date
   }
 }

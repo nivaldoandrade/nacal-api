@@ -17,6 +17,7 @@ export class AccountItem {
   static fromEntity(account: Account): AccountItem {
     return new AccountItem({
       ...account,
+      termsAcceptedAt: account.termsAcceptedAt?.toISOString() ?? null,
       createdAt: account.createdAt.toISOString(),
     });
   }
@@ -24,6 +25,9 @@ export class AccountItem {
   static toEntity(accountItemAttr: AccountItem.Attributes): Account {
     return new Account({
       ...accountItemAttr,
+      termsAcceptedAt: accountItemAttr.termsAcceptedAt
+        ? new Date(accountItemAttr.termsAcceptedAt)
+        : null,
       createdAt: new Date(accountItemAttr.createdAt),
     });
   }
@@ -69,6 +73,8 @@ export namespace AccountItem {
     email: string;
     externalId: string;
     isOnboarded: boolean;
+    termsAcceptedAt?: string | null;
+    termsVersion?: string | null;
     createdAt: string;
   }
 

@@ -7,6 +7,7 @@ import { AccountsRepository } from '@infra/databases/dynamodb/AccountsRepository
 import { SignUpUOW } from '@infra/databases/dynamodb/uow/SignUpUOW';
 import { AuthGateway } from '@infra/gateways/AuthGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { TERMS_VERSION } from '@shared/config/terms';
 
 @Injectable()
 export class CompleteOnboardingUseCase {
@@ -49,6 +50,8 @@ export class CompleteOnboardingUseCase {
     const goal = GoalCalculator.calculate(profile);
 
     existingAccount.isOnboarded = true;
+    existingAccount.termsAcceptedAt = new Date();
+    existingAccount.termsVersion = TERMS_VERSION;
 
     await this.signUpUOW.run({ account: existingAccount, goal, profile });
   }
