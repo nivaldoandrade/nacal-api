@@ -19,7 +19,7 @@ export class GetMealByIdUseCase {
       throw new ResourceNotFound('Meal not found.');
     }
 
-    const inputFileUrl = meal.status === Meal.StatusType.REJECTED
+    const inputFileUrl = meal.status === Meal.StatusType.REJECTED || meal.status === Meal.StatusType.FAILED
       ? null
       : this.mealFileStorageGateway.getFileURL(meal.inputFileKey);
 

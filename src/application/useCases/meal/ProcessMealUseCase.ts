@@ -145,10 +145,11 @@ export class ProcessMealUseCase {
 
   private async handleFailure(meal: Meal): Promise<boolean> {
     if (meal.attempts >= Meal.MAX_ATTEMPTS) {
-      await this.mealRepository.markFailed({
-        accountId: meal.accountId,
-        mealId: meal.id,
-      });
+      const failure = await this.mealRepository.failAndRefund({ meal });
+
+      if (failure.failed) {
+        await this.deleteInputFile(meal.inputFileKey);
+      }
 
       return false;
     }
@@ -191,7 +192,11 @@ export class ProcessMealUseCase {
       return;
     }
 
-    await this.mealRepository.markFailed({ accountId, mealId });
+    const failure = await this.mealRepository.failAndRefund({ meal });
+
+    if (failure.failed) {
+      await this.deleteInputFile(meal.inputFileKey);
+    }
   }
 
   private async deleteInputFile(inputFileKey: string): Promise<void> {
@@ -199,7 +204,7 @@ export class ProcessMealUseCase {
       await this.mealStorageGateway.deleteObject(inputFileKey);
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error('Failed to delete rejected meal file:', error);
+      console.error('Failed to delete meal input file:', error);
     }
   }
 

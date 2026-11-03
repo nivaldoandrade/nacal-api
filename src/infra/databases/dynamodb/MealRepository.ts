@@ -146,20 +146,134 @@ export class MealRepository {
     return this.sendConditional(command);
   }
 
-  async markFailed({ accountId, mealId }: MealRepository.FindByIdParams): Promise<boolean> {
+  async failAndRefund({ meal }: MealRepository.FailAndRefundParams): Promise<MealRepository.FailAndRefundResult> {
+    if (meal.status !== Meal.StatusType.PROCESSING && meal.status !== Meal.StatusType.QUEUED) {
+      return {
+        failed: false,
+        refunded: false,
+      };
+    }
+
+    if (!meal.quotaMonth) {
+      const failed = await this.markFailed({
+        meal,
+        quotaRefunded: false,
+      });
+
+      return {
+        failed,
+        refunded: false,
+      };
+    }
+
+    const failedUpdate = MealRepository.buildFailedUpdate({
+      quotaRefunded: true,
+    });
+    const failedCondition = MealRepository.buildFailedCondition(meal);
+
+    const command = new TransactWriteCommand({
+      ClientRequestToken: `${meal.id}#fail#${meal.attempts}`,
+      TransactItems: [
+        {
+          Update: {
+            TableName: this.config.db.dynamodb.mainTable,
+            Key: MealRepository.getKey({
+              accountId: meal.accountId,
+              mealId: meal.id,
+            }),
+            UpdateExpression: failedUpdate.updateExpression,
+            ConditionExpression: failedCondition.conditionExpression,
+            ExpressionAttributeNames: {
+              ...failedUpdate.expressionAttributeNames,
+              ...failedCondition.expressionAttributeNames,
+            },
+            ExpressionAttributeValues: {
+              ...failedUpdate.expressionAttributeValues,
+              ...failedCondition.expressionAttributeValues,
+            },
+          },
+        },
+        {
+          Update: {
+            TableName: this.config.db.dynamodb.rateLimitTable,
+            Key: RateLimitRepository.getCalendarMonthKey({
+              scope: 'account-monthly',
+              key: meal.accountId,
+              bucket: meal.quotaMonth,
+            }),
+            UpdateExpression: 'ADD #count :dec',
+            ConditionExpression: '#count > :zero',
+            ExpressionAttributeNames: {
+              '#count': 'count',
+            },
+            ExpressionAttributeValues: {
+              ':dec': -1,
+              ':zero': 0,
+            },
+          },
+        },
+      ],
+    });
+
+    try {
+      await dynamodbClient.send(command);
+      return {
+        failed: true,
+        refunded: true,
+      };
+    } catch (error) {
+      if (!(error instanceof TransactionCanceledException)) {
+        throw error;
+      }
+
+      const mealConditionFailed = error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed';
+      const quotaConditionFailed = error.CancellationReasons?.[1]?.Code === 'ConditionalCheckFailed';
+
+      if (quotaConditionFailed) {
+        const failed = await this.markFailed({
+          meal,
+          quotaRefunded: false,
+        });
+
+        return {
+          failed,
+          refunded: false,
+        };
+      }
+
+      if (mealConditionFailed) {
+        return {
+          failed: false,
+          refunded: false,
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  private async markFailed({
+    meal,
+    quotaRefunded,
+  }: MealRepository.MarkFailedParams): Promise<boolean> {
+    const failedUpdate = MealRepository.buildFailedUpdate({ quotaRefunded });
+    const failedCondition = MealRepository.buildFailedCondition(meal);
+
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.mainTable,
-      Key: MealRepository.getKey({ accountId, mealId }),
-      UpdateExpression: 'SET #status = :failed REMOVE #leaseExpiresAt',
-      ConditionExpression: '#status = :processing OR #status = :queued',
+      Key: MealRepository.getKey({
+        accountId: meal.accountId,
+        mealId: meal.id,
+      }),
+      UpdateExpression: failedUpdate.updateExpression,
+      ConditionExpression: failedCondition.conditionExpression,
       ExpressionAttributeNames: {
-        '#status': 'status',
-        '#leaseExpiresAt': 'leaseExpiresAt',
+        ...failedUpdate.expressionAttributeNames,
+        ...failedCondition.expressionAttributeNames,
       },
       ExpressionAttributeValues: {
-        ':failed': Meal.StatusType.FAILED,
-        ':processing': Meal.StatusType.PROCESSING,
-        ':queued': Meal.StatusType.QUEUED,
+        ...failedUpdate.expressionAttributeValues,
+        ...failedCondition.expressionAttributeValues,
       },
       ReturnValues: 'NONE',
     });
@@ -228,7 +342,7 @@ export class MealRepository {
     });
 
     const command = new TransactWriteCommand({
-      ClientRequestToken: meal.id,
+      ClientRequestToken: `${meal.id}#reject#${meal.attempts}`,
       TransactItems: [
         {
           Update: {
@@ -303,6 +417,62 @@ export class MealRepository {
 
       throw error;
     }
+  }
+
+  private static buildFailedUpdate({
+    quotaRefunded,
+  }: MealRepository.BuildFailedUpdateParams): MealRepository.FailedUpdate {
+    return {
+      updateExpression: 'SET #status = :failed, #quotaRefunded = :quotaRefunded REMOVE #leaseExpiresAt',
+      expressionAttributeNames: {
+        '#status': 'status',
+        '#quotaRefunded': 'quotaRefunded',
+        '#leaseExpiresAt': 'leaseExpiresAt',
+      },
+      expressionAttributeValues: {
+        ':failed': Meal.StatusType.FAILED,
+        ':quotaRefunded': quotaRefunded,
+      },
+    };
+  }
+
+  private static buildFailedCondition(meal: Meal): MealRepository.FailedCondition {
+    const expressionAttributeNames: Record<string, string> = {
+      '#status': 'status',
+      '#attempts': 'attempts',
+    };
+    const expressionAttributeValues: Record<string, unknown> = {
+      ':attempts': meal.attempts,
+    };
+
+    if (meal.status === Meal.StatusType.QUEUED) {
+      expressionAttributeValues[':queued'] = Meal.StatusType.QUEUED;
+
+      return {
+        conditionExpression: '#status = :queued AND #attempts = :attempts',
+        expressionAttributeNames,
+        expressionAttributeValues,
+      };
+    }
+
+    expressionAttributeNames['#leaseExpiresAt'] = 'leaseExpiresAt';
+    expressionAttributeValues[':processing'] = Meal.StatusType.PROCESSING;
+
+    if (meal.leaseExpiresAt === null) {
+      return {
+        conditionExpression: '#status = :processing AND #attempts = :attempts AND attribute_not_exists(#leaseExpiresAt)',
+        expressionAttributeNames,
+        expressionAttributeValues,
+      };
+    }
+
+    expressionAttributeValues[':leaseExpiresAt'] = meal.leaseExpiresAt;
+
+    return {
+      conditionExpression: '#status = :processing AND #attempts = :attempts AND #leaseExpiresAt = :leaseExpiresAt',
+      expressionAttributeNames,
+      expressionAttributeValues,
+    };
   }
 
   private static buildRejectedUpdate({
@@ -434,6 +604,36 @@ namespace MealRepository {
 
   export type RejectedUpdate = {
     updateExpression: string;
+    expressionAttributeNames: Record<string, string>;
+    expressionAttributeValues: Record<string, unknown>;
+  }
+
+  export type FailAndRefundParams = {
+    meal: Meal;
+  }
+
+  export type FailAndRefundResult = {
+    failed: boolean;
+    refunded: boolean;
+  }
+
+  export type MarkFailedParams = {
+    meal: Meal;
+    quotaRefunded: boolean;
+  }
+
+  export type BuildFailedUpdateParams = {
+    quotaRefunded: boolean;
+  }
+
+  export type FailedUpdate = {
+    updateExpression: string;
+    expressionAttributeNames: Record<string, string>;
+    expressionAttributeValues: Record<string, unknown>;
+  }
+
+  export type FailedCondition = {
+    conditionExpression: string;
     expressionAttributeNames: Record<string, string>;
     expressionAttributeValues: Record<string, unknown>;
   }
