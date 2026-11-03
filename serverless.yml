@@ -1,7 +1,7 @@
 # "org" ensures this Service is used with the correct Serverless Framework Access Key.
 org: nivaldoandrade
 # "service" is the name of this project. This will also be added to your AWS resource names.
-service: api
+service: nacal-api
 
 custom:
   cognito:
@@ -17,7 +17,7 @@ provider:
   iam:
     role: ${file(./sls/config/role.yml)}
   httpApi:
-    cors: true
+    cors: ${file(./sls/config/cors.js)}
     disableDefaultEndpoint: ${env:APIGATEWAY_DEFAULT_ENDPOINT_DISABLE, false}
     authorizers:
       CognitoAuthorizer:
@@ -44,6 +44,7 @@ build:
     configFile: ./esbuild.config.mjs
 
 resources:
+  - ${file(./sls/resources/conditions.yml)}
   - ${file(./sls/resources/userPool.yaml)}
   - ${file(./sls/resources/mainTable.yml)}
   - ${file(./sls/resources/mealsBucket.yml)}

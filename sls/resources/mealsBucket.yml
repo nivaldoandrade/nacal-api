@@ -3,4 +3,12 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     Properties:
-      BucketName: nafoodiary-${self:service}-${sls:stage}-meals-bucket
+      BucketName: nacal-api-${sls:stage}-meals-bucket
+      CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - 'POST'
+              AllowedOrigins:
+                - ${env:APP_WEB_URL}

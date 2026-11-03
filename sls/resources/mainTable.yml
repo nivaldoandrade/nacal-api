@@ -4,7 +4,10 @@ Resources:
     Properties:
       TableName: ${self:service}-${sls:stage}-MainTable
       BillingMode: PAY_PER_REQUEST
-      DeletionProtectionEnabled: false
+      DeletionProtectionEnabled: !If
+        - IsProd
+        - true
+        - false
       TimeToLiveSpecification:
         AttributeName: expiresAt
         Enabled: true

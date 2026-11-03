@@ -1,0 +1,4 @@
+Conditions:
+  IsProd: !Equals
+    - ${sls:stage}
+    - prod

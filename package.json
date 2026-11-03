@@ -4,7 +4,9 @@
  "main": "index.js",
  "license": "MIT",
  "scripts": {
-  "typecheck": "tsc --noEmit"
+  "typecheck": "tsc --noEmit",
+  "check:prod": "node scripts/check-prod-env.mjs",
+  "deploy:prod": "node scripts/check-prod-env.mjs && sls deploy --stage prod"
  },
  "devDependencies": {
   "@eslint/js": "^10.0.1",

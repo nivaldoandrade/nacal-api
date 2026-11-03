@@ -22,7 +22,10 @@ Resources:
   MealsDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      ActionsEnabled: false
+      ActionsEnabled: !If
+        - IsProd
+        - true
+        - false
       AlarmName: ${self:service}-${sls:stage}-MealsDLQAlarm
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible

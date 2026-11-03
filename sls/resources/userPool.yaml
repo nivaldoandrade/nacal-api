@@ -4,7 +4,10 @@ Resources:
       Properties:
         UserPoolName: ${self:custom.cognito.UserPoolName}
         MfaConfiguration: OFF
-        DeletionProtection: INACTIVE
+        DeletionProtection: !If
+          - IsProd
+          - ACTIVE
+          - INACTIVE
         AutoVerifiedAttributes:
           - email
         UsernameAttributes:
@@ -75,10 +78,14 @@ Resources:
           - aws.cognito.signin.user.admin
         AllowedOAuthFlows:
           - code
-        CallbackURLs:
-          - http://localhost:8081
-          - https://192.168.100.21:8443
-          - exp://192.168.100.21:8081
+        CallbackURLs: !If
+          - IsProd
+          -
+            - https://app.nacal.app
+          -
+            - http://localhost:8081
+            - https://192.168.100.21:8443
+            - exp://192.168.100.21:8081
         SupportedIdentityProviders:
           - COGNITO
           - Google
@@ -86,7 +93,10 @@ Resources:
       Type: AWS::Cognito::UserPoolDomain
       Properties:
         UserPoolId: !Ref UserPool
-        Domain: nafoodiary
+        Domain: !If
+          - IsProd
+          - nacal
+          - nacal-dev
     GoogleIdentityProvider:
       Type: AWS::Cognito::UserPoolIdentityProvider
       Properties:
