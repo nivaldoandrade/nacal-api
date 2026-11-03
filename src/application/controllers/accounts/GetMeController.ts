@@ -1,8 +1,11 @@
 import { Controller } from '@application/contracts/Controller';
 import { Profile } from '@application/entities/Profile';
 import { Subscription } from '@application/entities/Subscription';
+import { ResourceNotFound } from '@application/errors/application/ResourceNotFound';
 import { GetProfileAndGoalByAccountId } from '@application/query/GetProfileAndGoalByAccountId';
+import { AccountProvisioningService } from '@application/services/AccountProvisioningService';
 import { MealQuotaService } from '@application/services/MealQuotaService';
+import { AuthGateway } from '@infra/gateways/AuthGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
 
 @Injectable()
@@ -11,6 +14,8 @@ export class GetMeController extends Controller<'private'> {
   constructor(
     private readonly getProfileAndGoaByAccountId: GetProfileAndGoalByAccountId,
     private readonly mealQuotaService: MealQuotaService,
+    private readonly authGateway: AuthGateway,
+    private readonly accountProvisioningService: AccountProvisioningService,
   ) {
     super();
   }
@@ -19,7 +24,7 @@ export class GetMeController extends Controller<'private'> {
 
     const accountId = request.accountId;
 
-    const { isOnboarded, profile, goal, subscription } = await this.getProfileAndGoaByAccountId.execute(accountId);
+    const { isOnboarded, profile, goal, subscription } = await this.getAccountData(request);
 
     const plan = Subscription.resolveEffectivePlan(
       subscription
@@ -51,6 +56,43 @@ export class GetMeController extends Controller<'private'> {
         mealQuota,
       },
     };
+  }
+
+  private async getAccountData(request: Controller.RequestPrivate) {
+    try {
+      return await this.getProfileAndGoaByAccountId.execute(request.accountId);
+    } catch (error) {
+      if (!(error instanceof ResourceNotFound)) {
+        throw error;
+      }
+    }
+
+    // A Cognito user without an Account only happens when the Account write failed after the
+    // user was confirmed. Recover here, the first call after sign-in, instead of paying for the
+    // check on every sign-in.
+    await this.provisionMissingAccount(request);
+
+    return this.getProfileAndGoaByAccountId.execute(request.accountId);
+  }
+
+  private async provisionMissingAccount(request: Controller.RequestPrivate): Promise<void> {
+    const accessToken = request.headers['authorization']?.replace(/^Bearer\s+/i, '');
+
+    if (!accessToken) {
+      throw new ResourceNotFound('Account not found.');
+    }
+
+    const user = await this.authGateway.getUser(accessToken);
+
+    if (!user.email || !user.externalId || !user.emailVerified || user.internalId !== request.accountId) {
+      throw new ResourceNotFound('Account not found.');
+    }
+
+    await this.accountProvisioningService.ensureAccount({
+      email: user.email,
+      internalId: user.internalId,
+      externalId: user.externalId,
+    });
   }
 }
 

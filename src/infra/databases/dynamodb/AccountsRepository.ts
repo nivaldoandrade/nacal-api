@@ -1,5 +1,5 @@
 import { Account } from '@application/entities/Account';
-import { PutCommand, PutCommandInput, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, PutCommandInput, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { dynamodbClient } from '@infra/clients/dynamodbClient';
 import { AccountItem } from '@infra/databases/dynamodb/items/AccountItem';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -9,6 +9,25 @@ import { AppConfig } from '@shared/config/AppConfig';
 export class AccountsRepository {
 
   constructor(private readonly config: AppConfig) { }
+
+  async findById(accountId: string): Promise<Account | null> {
+    const command = new GetCommand({
+      TableName: this.config.db.dynamodb.mainTable,
+      Key: {
+        PK: AccountItem.getPK(accountId),
+        SK: AccountItem.getSK(accountId),
+      },
+      ConsistentRead: true,
+    });
+
+    const { Item } = await dynamodbClient.send(command);
+
+    if (!Item) {
+      return null;
+    }
+
+    return AccountItem.toEntity(Item as AccountItem.Attributes);
+  }
 
   async findByEmail(email: string): Promise<Account | null> {
     const command = new QueryCommand({

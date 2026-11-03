@@ -1,34 +1,43 @@
-import { AdminCreateUserCommand, AdminLinkProviderForUserCommand, AdminSetUserPasswordCommand, paginateListUsers, UserType } from '@aws-sdk/client-cognito-identity-provider';
+import { AdminCreateUserCommand, AdminLinkProviderForUserCommand, AdminSetUserPasswordCommand, AdminUpdateUserAttributesCommand, paginateListUsers, UserType } from '@aws-sdk/client-cognito-identity-provider';
 import { cognitoClient } from '@infra/clients/cognitoClient';
 import { generateUniqueId } from '@shared/utils/generateUniqueId';
 import { PreSignUpTriggerEvent } from 'aws-lambda';
 
 export async function handler(event: PreSignUpTriggerEvent) {
-  event.response.autoConfirmUser = true;
-  event.response.autoVerifyEmail = true;
+  if (event.triggerSource === 'PreSignUp_AdminCreateUser') {
+    return event;
+  }
+
+  const { userName, userPoolId } = event;
+  const { email: rawEmail, name } = event.request.userAttributes;
+  const email = rawEmail?.trim().toLowerCase();
+
+  if (!email) {
+    throw new Error('Missing email.');
+  }
 
   if (event.triggerSource !== 'PreSignUp_ExternalProvider') {
     return event;
   }
 
-  const { userName, userPoolId } = event;
-  const { email, name } = event.request.userAttributes;
-
   let nativeUser = await getNativeUserByEmail({ email, userPoolId });
 
   if (!nativeUser) {
     nativeUser = await createNative({
-      name,
+      name: name || email.split('@')[0],
       email,
       userPoolId,
     });
+  } else if (nativeUser.UserStatus !== 'CONFIRMED') {
+    await resetUnconfirmedNative({ email, userPoolId });
   }
 
   const nativeUserId = nativeUser.Attributes?.find(({ Name }) => Name === 'sub')?.Value;
 
   if (!nativeUserId) {
-    throw new Error(`User "${userName}" not found".`);
+    throw new Error(`User "${userName}" not found.`);
   }
+
   const [providerName, providerUserId] = userName.split('_');
 
   await linkProvider({
@@ -37,6 +46,9 @@ export async function handler(event: PreSignUpTriggerEvent) {
     providerName,
     providerUserId,
   });
+
+  event.response.autoConfirmUser = true;
+  event.response.autoVerifyEmail = true;
 
   return event;
 }
@@ -60,8 +72,12 @@ async function getNativeUserByEmail({ email, userPoolId }: IGetNativeUserByEmail
   );
 
   for await (const page of paginator) {
-    if (page.Users && page.Users.length > 0) {
-      nativeUser = page.Users[0];
+    const user = page.Users?.find((candidate) => (
+      candidate.Attributes?.some(({ Name }) => Name === 'custom:internalId')
+    ));
+
+    if (user) {
+      nativeUser = user;
       break;
     }
   }
@@ -96,17 +112,35 @@ async function createNative({ email, name, userPoolId }: ICreateNativeParams) {
     throw new Error(`Failed to create native user for email "${email}".`);
   }
 
-  const password = generateUniqueId();
+  await resetUnconfirmedNative({ email, userPoolId });
+
+  return User;
+}
+
+interface IResetUnconfirmedNativeParams {
+  email: string;
+  userPoolId: string;
+}
+
+async function resetUnconfirmedNative({ email, userPoolId }: IResetUnconfirmedNativeParams) {
   const setPasswordCommand = new AdminSetUserPasswordCommand({
     UserPoolId: userPoolId,
     Username: email,
-    Password: password,
+    Password: generateUniqueId(),
     Permanent: true,
   });
 
   await cognitoClient.send(setPasswordCommand);
 
-  return User;
+  const updateAttributesCommand = new AdminUpdateUserAttributesCommand({
+    UserPoolId: userPoolId,
+    Username: email,
+    UserAttributes: [
+      { Name: 'email_verified', Value: 'true' },
+    ],
+  });
+
+  await cognitoClient.send(updateAttributesCommand);
 }
 
 interface ILinkProviderParams {
@@ -115,6 +149,7 @@ interface ILinkProviderParams {
   providerName: string;
   providerUserId: string;
 }
+
 async function linkProvider({ userPoolId, nativeUserId, providerName, providerUserId }: ILinkProviderParams) {
 
   const command = new AdminLinkProviderForUserCommand({

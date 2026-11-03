@@ -7,7 +7,9 @@ export class ForgotPasswordUseCase {
   constructor(private readonly authGateway: AuthGateway) { }
 
   async execute(email: string): Promise<void> {
-    await this.authGateway.forgotPassword(email);
+    const username = await this.authGateway.resolveUsername(email);
+
+    await this.authGateway.forgotPassword(username);
   }
 
 }

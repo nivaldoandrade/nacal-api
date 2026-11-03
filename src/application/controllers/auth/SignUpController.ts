@@ -17,18 +17,21 @@ export class SignUpController extends Controller<'public'> {
   }
 
   protected async handler(
-    request: Controller.Request<'public', SignUpBody>,
+    request: Controller.RequestPublic<SignUpBody>,
   ): Promise<Controller.Response<SignUpController.Response>> {
 
     const { account, profile } = request.body;
 
-    const { accessToken, refreshToken } = await this.signUpUseCase.execute({ account, profile });
+    const { requiresConfirmation, alreadyPending } = await this.signUpUseCase.execute({
+      account,
+      profile,
+    });
 
     return {
       statusCode: 201,
       body: {
-        accessToken,
-        refreshToken,
+        requiresConfirmation,
+        alreadyPending,
       },
     };
   }
@@ -37,7 +40,7 @@ export class SignUpController extends Controller<'public'> {
 
 namespace SignUpController {
   export type Response = {
-    accessToken: string;
-    refreshToken: string;
+    requiresConfirmation: boolean;
+    alreadyPending: boolean;
   }
 }

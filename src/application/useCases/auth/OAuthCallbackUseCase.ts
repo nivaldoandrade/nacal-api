@@ -1,6 +1,5 @@
-import { Account } from '@application/entities/Account';
 import { InvalidOAuthGrant } from '@application/errors/application/InvalidOAuthGrant';
-import { AccountsRepository } from '@infra/databases/dynamodb/AccountsRepository';
+import { AccountProvisioningService } from '@application/services/AccountProvisioningService';
 import { AuthGateway } from '@infra/gateways/AuthGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
 
@@ -9,7 +8,7 @@ export class OAuthCallbackUseCase {
 
   constructor(
     private readonly authGateway: AuthGateway,
-    private readonly accountsRepository: AccountsRepository,
+    private readonly accountProvisioningService: AccountProvisioningService,
   ) { }
 
   async execute({
@@ -23,27 +22,26 @@ export class OAuthCallbackUseCase {
       code_verifier,
     });
 
-    const { email, externalId, internalId } = await this.authGateway.getUser(accessToken);
+    const { email, externalId, internalId, emailVerified } = await this.authGateway.getUser(accessToken);
 
     if (!email || !externalId || !internalId) {
       throw new InvalidOAuthGrant('Missing user data from token.');
     }
 
-    const existingAccount = await this.accountsRepository.findByEmail(email);
-
-    if (!existingAccount) {
-      const newAccount = new Account({
-        id: internalId,
-        email,
-        externalId,
-        isOnboarded: false,
-      });
-
-      await this.accountsRepository.create(newAccount);
+    if (!emailVerified) {
+      throw new InvalidOAuthGrant('Email is not verified.');
     }
 
+    // Applies the PendingSignUp of a native user who skipped the email code and signed in with
+    // Google instead (the PreSignUp trigger confirms them), so the onboarding data is kept.
+    const account = await this.accountProvisioningService.ensureAccount({
+      email,
+      internalId,
+      externalId,
+    });
+
     return {
-      isOnboarded: existingAccount?.isOnboarded ?? false,
+      isOnboarded: account.isOnboarded,
       accessToken,
       refreshToken,
     };

@@ -1,10 +1,13 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
+import { CodeDeliveryFailed } from '@application/errors/application/CodeDeliveryFailed';
 import { InvalidOAuthGrant } from '@application/errors/application/InvalidOAuthGrant';
-import { AdminDeleteUserCommand, ConfirmForgotPasswordCommand, ForgotPasswordCommand, GetTokensFromRefreshTokenCommand, GetUserCommand, InitiateAuthCommand, NotAuthorizedException, SignUpCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { TooManyAttempts } from '@application/errors/application/TooManyAttempts';
+import { AdminDeleteUserCommand, AdminSetUserPasswordCommand, AdminGetUserCommand, CodeDeliveryFailureException, ConfirmForgotPasswordCommand, ConfirmSignUpCommand, ForgotPasswordCommand, GetTokensFromRefreshTokenCommand, GetUserCommand, InitiateAuthCommand, LimitExceededException, NotAuthorizedException, ResendConfirmationCodeCommand, SignUpCommand, TooManyFailedAttemptsException, TooManyRequestsException, UserNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { cognitoClient } from '@infra/clients/cognitoClient';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { normalizeEmail } from '@shared/utils/normalizeEmail';
 
 @Injectable()
 export class AuthGateway {
@@ -83,6 +86,7 @@ export class AuthGateway {
       email: attrs['email'] ?? null,
       externalId: attrs['sub'] ?? null,
       internalId: attrs['custom:internalId'] ?? null,
+      emailVerified: attrs['email_verified'] === 'true',
     };
   }
 
@@ -98,7 +102,7 @@ export class AuthGateway {
 
     });
 
-    const { AuthenticationResult } = await cognitoClient.send(command);
+    const { AuthenticationResult } = await mapThrottling(cognitoClient.send(command));
 
     if (!AuthenticationResult?.AccessToken || !AuthenticationResult.RefreshToken) {
       throw new Error(`Error signin user: ${email}`);
@@ -114,7 +118,7 @@ export class AuthGateway {
   async signUp(
     params: AuthGateway.SignUp['params'],
   ): Promise<AuthGateway.SignUp['result']> {
-    const { internalId, email, password } = params;
+    const { internalId, email, password, name } = params;
 
     const command = new SignUpCommand({
       ClientId: this.config.envAuth.cognito.clientId,
@@ -126,10 +130,18 @@ export class AuthGateway {
           Name: 'custom:internalId',
           Value: internalId,
         },
+        {
+          Name: 'name',
+          Value: name,
+        },
+        {
+          Name: 'email',
+          Value: email,
+        },
       ],
     });
 
-    const { UserSub: externalId } = await cognitoClient.send(command);
+    const { UserSub: externalId } = await mapThrottling(cognitoClient.send(command));
 
     if (!externalId) {
       throw new Error(`Error signup user: ${email}`);
@@ -166,7 +178,7 @@ export class AuthGateway {
       SecretHash: this.getSecretHash(email),
     });
 
-    await cognitoClient.send(command);
+    await mapThrottling(cognitoClient.send(command));
   }
 
   async confirmForgotPassword(
@@ -184,6 +196,18 @@ export class AuthGateway {
       ConfirmationCode: confirmationCode,
     });
 
+    await mapThrottling(cognitoClient.send(command));
+  }
+
+  /** Replaces the password with a random one nobody knows; recovery is via forgot-password. */
+  async invalidatePassword(username: string): Promise<void> {
+    const command = new AdminSetUserPasswordCommand({
+      UserPoolId: this.config.envAuth.cognito.userPoolId,
+      Username: username,
+      Password: `${randomBytes(24).toString('base64url')}aA1!`,
+      Permanent: true,
+    });
+
     await cognitoClient.send(command);
   }
 
@@ -196,6 +220,73 @@ export class AuthGateway {
     await cognitoClient.send(command);
   }
 
+  async getUserByEmail(email: string): Promise<AuthGateway.AdminUser | null> {
+    const command = new AdminGetUserCommand({
+      UserPoolId: this.config.envAuth.cognito.userPoolId,
+      Username: email,
+    });
+
+    try {
+      const { UserAttributes, UserStatus, Username } = await cognitoClient.send(command);
+
+      const attrs = Object.fromEntries(
+        UserAttributes?.map(({ Name, Value }) => [Name, Value ?? null]) ?? [],
+      ) as Record<string, string | null>;
+
+      return {
+        username: Username ?? email,
+        email: attrs['email'] ?? email,
+        name: attrs['name'] ?? null,
+        externalId: attrs['sub'] ?? null,
+        internalId: attrs['custom:internalId'] ?? null,
+        status: UserStatus ?? null,
+      };
+    } catch (error) {
+      if (error instanceof UserNotFoundException) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  async confirmSignUp({ email, confirmationCode }: AuthGateway.ConfirmSignUp['params']): Promise<void> {
+    const command = new ConfirmSignUpCommand({
+      ClientId: this.config.envAuth.cognito.clientId,
+      Username: email,
+      ConfirmationCode: confirmationCode,
+      SecretHash: this.getSecretHash(email),
+    });
+
+    await mapThrottling(cognitoClient.send(command));
+  }
+
+  async resendConfirmationCode(email: string): Promise<void> {
+    const command = new ResendConfirmationCodeCommand({
+      ClientId: this.config.envAuth.cognito.clientId,
+      Username: email,
+      SecretHash: this.getSecretHash(email),
+    });
+
+    await mapThrottling(cognitoClient.send(command));
+  }
+
+  /**
+   * The user pool is case-sensitive. New users are stored with a normalized (lowercase) email,
+   * but users created before normalization may still be stored with the casing they typed.
+   * Prefer the normalized username and fall back to the raw input only when it exists.
+   */
+  async resolveUsername(email: string): Promise<string> {
+    const normalized = normalizeEmail(email);
+    const raw = email.trim();
+
+    if (normalized === raw || await this.getUserByEmail(normalized)) {
+      return normalized;
+    }
+
+    return (await this.getUserByEmail(raw)) ? raw : normalized;
+  }
+
   private getSecretHash(email: string): string {
     const clientId = this.config.envAuth.cognito.clientId;
     const clientSecret = this.config.envAuth.cognito.clientSecret;
@@ -203,6 +294,26 @@ export class AuthGateway {
     return createHmac('SHA256', clientSecret)
       .update(`${email}${clientId}`)
       .digest('base64');
+  }
+}
+
+async function mapThrottling<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request;
+  } catch (error) {
+    if (
+      error instanceof LimitExceededException
+      || error instanceof TooManyFailedAttemptsException
+      || error instanceof TooManyRequestsException
+    ) {
+      throw new TooManyAttempts();
+    }
+
+    if (error instanceof CodeDeliveryFailureException) {
+      throw new CodeDeliveryFailed();
+    }
+
+    throw error;
   }
 }
 
@@ -230,9 +341,26 @@ namespace AuthGateway {
       internalId: string;
       email: string;
       password: string;
+      name: string;
     },
     result: {
       externalId: string;
+    }
+  }
+
+  export type AdminUser = {
+    username: string;
+    email: string | null;
+    name: string | null;
+    externalId: string | null;
+    internalId: string | null;
+    status: string | null;
+  }
+
+  export type ConfirmSignUp = {
+    params: {
+      email: string;
+      confirmationCode: string;
     }
   }
 

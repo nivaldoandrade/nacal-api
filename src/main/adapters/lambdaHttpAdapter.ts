@@ -156,7 +156,7 @@ function resolveRateLimitKey(
       return 'accountId' in request ? `${event.routeKey}#${request.accountId}` : undefined;
     case 'email': {
       const email = request.body?.[rule.field ?? 'email'];
-      return typeof email === 'string' ? email.toLowerCase() : undefined;
+      return typeof email === 'string' ? `${event.routeKey}#email#${email.trim().toLowerCase()}` : undefined;
     }
     default:
       return undefined;

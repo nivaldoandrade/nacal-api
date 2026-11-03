@@ -1,6 +1,9 @@
+import { ApplicationError } from '@application/errors/application/ApplicationError';
+import { EmailNotConfirmed } from '@application/errors/application/EmailNotConfirmed';
 import { InvalidCredentials } from '@application/errors/application/InvalidCredentials';
 import { AuthGateway } from '@infra/gateways/AuthGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { UserNotConfirmedException } from '@aws-sdk/client-cognito-identity-provider';
 
 @Injectable()
 export class SignInUseCase {
@@ -13,13 +16,18 @@ export class SignInUseCase {
     { email, password }: SignInUseCase.Input,
   ): Promise<SignInUseCase.Output> {
     try {
-      const { accessToken, refreshToken } = await this.authGateway.signIn({ email, password });
+      const username = await this.authGateway.resolveUsername(email);
 
-      return {
-        accessToken,
-        refreshToken,
-      };
-    } catch {
+      return await this.authGateway.signIn({ email: username, password });
+    } catch (error) {
+      if (error instanceof UserNotConfirmedException) {
+        throw new EmailNotConfirmed();
+      }
+
+      if (error instanceof ApplicationError) {
+        throw error;
+      }
+
       throw new InvalidCredentials();
     }
   }

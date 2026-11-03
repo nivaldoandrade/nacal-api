@@ -13,8 +13,10 @@ export class ConfirmationForgotPasswordUseCase {
       confirmationCode,
     }: ConfirmationForgotPasswordUseCase.Input,
   ): Promise<void> {
+    const username = await this.authGateway.resolveUsername(email);
+
     await this.authGateway.confirmForgotPassword({
-      email,
+      email: username,
       password,
       confirmationCode,
     });

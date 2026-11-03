@@ -12,6 +12,20 @@ signIn:
         path: /auth/sign-in
         method: POST
 
+confirmSignUp:
+  handler: src/main/functions/auth/confirmSignUp.handler
+  events:
+    - httpApi:
+        path: /auth/confirm-sign-up
+        method: POST
+
+resendConfirmationCode:
+  handler: src/main/functions/auth/resendConfirmationCode.handler
+  events:
+    - httpApi:
+        path: /auth/resend-confirmation-code
+        method: POST
+
 refreshToken:
   handler: src/main/functions/auth/refreshToken.handler
   events:

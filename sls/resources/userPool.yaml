@@ -9,6 +9,11 @@ Resources:
           - email
         UsernameAttributes:
           - email
+        # Keep the current email until the new one is verified, so a user cannot point their
+        # account at someone else's address through UpdateUserAttributes.
+        UserAttributeUpdateSettings:
+          AttributesRequireVerificationBeforeUpdate:
+            - email
         AdminCreateUserConfig:
           AllowAdminCreateUserOnly: false
         AccountRecoverySetting:
