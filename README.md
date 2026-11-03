@@ -4,7 +4,9 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 
 ## Funcionalidades
 
-- **Autenticação completa**: Cadastro, login, refresh token e recuperação de senha via AWS Cognito;
+- **Autenticação completa**: Cadastro com **confirmação de e-mail por código**, login, refresh token e recuperação de senha via AWS Cognito; e-mail normalizado (minúsculas) em todos os fluxos;
+- **Beta fechado**: allowlist de e-mails (`BETA_GATE_ENABLED` + `BETA_ALLOWED_EMAILS`) aplicada no cadastro por e-mail e no login com Google;
+- **Aceite de termos**: cadastro e onboarding exigem `acceptedTerms: true`; a `Account` guarda `termsVersion` e `termsAcceptedAt`;
 - **Login com Google (OAuth 2.0 + PKCE)**: Autenticação via Google Identity Provider do Cognito com callback e onboarding automático do novo usuário;
 - **Perfil do usuário**: Cadastro de dados pessoais (nome, data de nascimento, gênero, altura, peso, nível de atividade e objetivo);
 - **Metas nutricionais**: Cálculo automático de calorias e macronutrientes diários com base no perfil (TDEE/BMR);
@@ -18,7 +20,8 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas da fila (Dead Letter Queue);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
-- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro ilimitado; **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas, rate limit por IP (120/60s) e `reservedConcurrency: 5`;
+- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro ilimitado; **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s) (`reservedConcurrency: 5` está temporariamente desligado até o aumento da cota de concorrência da conta de produção);
+- **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
 
 ## Arquitetura
 
@@ -88,7 +91,7 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 10. Para **áudios**, transcreve via GPT-4o-mini-transcribe, depois envia o texto para o GPT-5.4-mini. Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
 11. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e, para áudios, um `mealType` opcional quando o usuário declara a refeição;
 12. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
-13. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
+13. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
 
 ## Validação, gate e rejeição
 
@@ -111,9 +114,42 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 | Status | Quando acontece | Cota | `inputFileUrl` |
 | ------ | --------------- | ---- | -------------- |
 | `REJECTED` | Arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos | Estornada | `null` |
-| `FAILED` | Falha de plataforma após 2 tentativas (OpenAI, timeout, S3, resposta inválida) | Não estornada | URL do arquivo |
+| `FAILED` | Falha de plataforma após 2 tentativas (OpenAI, timeout, S3, resposta inválida) | Estornada | `null` |
 
-Os motivos de rejeição são `INVALID_FILE`, `NOT_A_MEAL` e `NO_FOOD_DETECTED`. Uma tentativa rejeitada continua contando no rate limit de `POST /create-meal`.
+Os motivos de rejeição são `INVALID_FILE`, `NOT_A_MEAL` e `NO_FOOD_DETECTED`. Uma tentativa rejeitada ou com falha continua contando no rate limit de `POST /create-meal`.
+
+O estorno é feito numa transação (`TransactWriteItems`) que muda o status da refeição e decrementa o contador mensal juntos. Cada operação usa seu próprio `ClientRequestToken` (`<mealId>#fail#<tentativa>` / `<mealId>#reject#<tentativa>`), então um retry da fila não colide com outra operação na janela de idempotência do DynamoDB. Se o contador já estiver em zero, a refeição é marcada com `quotaRefunded: false`.
+
+## Fluxo de Cadastro por E-mail
+
+```text
+App                                   API                                   Cognito / DynamoDB
+ | POST /auth/sign-up                  |                                      |
+ |------------------------------------▶| beta gate + e-mail em minúsculas      |
+ |                                     | SignUp (UNCONFIRMED) ---------------▶ | envia código
+ |                                     | grava PendingSignUp (TTL 24h) ------▶ | perfil + termos
+ |◀------- 201 requiresConfirmation ---|                                      |
+ | POST /auth/confirm-sign-up          |                                      |
+ | { email, confirmationCode, password}|                                      |
+ |------------------------------------▶| ConfirmSignUp ----------------------▶ | CONFIRMED
+ |                                     | testa a senha (InitiateAuth)         |
+ |                                     | cria Account + Profile + Goal ------▶ | (aplica o PendingSignUp)
+ |◀------- 200 { passwordResetRequired }                                      |
+ | POST /auth/sign-in                  |                                      |
+```
+
+- **Cadastro**: `POST /auth/sign-up` cria o usuário `UNCONFIRMED` no Cognito e guarda perfil e aceite de termos num `PendingSignUp` (TTL de 24h). A `Account` só é criada depois da confirmação. Responde `201 { requiresConfirmation: true, alreadyPending }`;
+- **Cadastro repetido**: se o e-mail ainda está `UNCONFIRMED`, o usuário pendente é apagado e recriado. A senha, o perfil e os termos novos passam a valer, com código novo e TTL renovado (`alreadyPending: true`). E-mail já confirmado → `409 EMAIL_ALREADY_IN_USE`;
+- **Confirmação**: `POST /auth/confirm-sign-up` recebe código **e senha**. O código prova a posse do e-mail, mas não quem escolheu a senha (qualquer pessoa pode cadastrar um e-mail ainda não confirmado). Depois de confirmar, a API testa a senha:
+  - senha certa → aplica o `PendingSignUp` e cria a conta já com onboarding → `200 { passwordResetRequired: false }`;
+  - senha errada (ou qualquer falha no teste, *fail-closed*) → troca a senha por uma aleatória, descarta o `PendingSignUp` e cria a conta sem onboarding → `200 { passwordResetRequired: true }`. O usuário define uma senha nova pelo "esqueci a senha";
+- **Conta já confirmada**: a confirmação não grava nada; responde `200` se a conta existe e `400 INVALID_CONFIRMATION_CODE` se não existe;
+- **Reenvio**: `POST /auth/resend-confirmation-code` responde `204` sempre (não revela se o e-mail existe) e só reenvia para usuários `UNCONFIRMED`;
+- **Login antes de confirmar**: `POST /auth/sign-in` responde `403 EMAIL_NOT_CONFIRMED`;
+- **Recuperação de conta incompleta**: se o Cognito confirmou o usuário mas a gravação da conta falhou, `GET /me` (chamado logo após o login) cria a conta a partir do `PendingSignUp`. Só acontece quando a conta não existe, o e-mail está verificado e o `internalId` do usuário bate com o do token;
+- **Erros do Cognito**: limite de tentativas → `429 TOO_MANY_ATTEMPTS`; falha no envio do código → `502 CODE_DELIVERY_FAILED`;
+- **E-mail com maiúsculas**: o pool do Cognito diferencia maiúsculas. Novos usuários são gravados em minúsculas; login e recuperação de senha tentam o e-mail normalizado e, se não existir, o digitado (contas antigas);
+- **Troca de e-mail**: o pool exige verificação antes de aplicar um e-mail novo (`AttributesRequireVerificationBeforeUpdate`), e o provisionamento de conta busca pelo `internalId` imutável, nunca pelo e-mail.
 
 ## Classificação da Refeição (nome e ícone)
 
@@ -167,14 +203,15 @@ Frontend                          Cognito                       API (Lambda)
 2. O usuário autentica com a conta Google e o Cognito redireciona de volta com um `code`;
 3. No primeiro login com Google, o trigger `PreSignUp_ExternalProvider` cria um usuário nativo "shadow" no Cognito (username = email, atributo `custom:internalId`) e vincula o Identity Provider a esse usuário;
 4. O frontend envia `code`, `redirectUri` e `codeVerifier` para `POST /auth/oauth/callback`;
-5. O backend troca o `code` pelos tokens, deriva identidade do token e, se o email ainda não estiver registrado, **cria a `Account` no DynamoDB** com `isOnboarded: false` — retorna `200` com `{ accessToken, refreshToken, isOnboarded }`. O access token já contém o claim `internalId`;
+5. O backend troca o `code` pelos tokens, deriva identidade do token (exige `email_verified`) e, se ainda não houver `Account` para o `internalId`, **cria a `Account` no DynamoDB**. Se existir um `PendingSignUp` (cadastro por e-mail sem código, seguido de login com Google), ele é aplicado e a conta já nasce com onboarding; caso contrário, `isOnboarded: false` — retorna `200` com `{ accessToken, refreshToken, isOnboarded }`. O access token já contém o claim `internalId`;
 6. **Usuário novo** (`isOnboarded: false`): o frontend chama `POST /auth/complete-onboarding` com o `accessToken`. O backend deriva identidade do token, **reutiliza a `Account` criada no callback**, cria `Profile` e `Goal` e marca `isOnboarded: true` atomicamente (`TransactWriteCommand`). Responde `204`;
 7. Como o claim `internalId` já vem no primeiro token (atributo `custom:internalId` injetado pelo trigger `preTokenGeneration`), não é necessária uma troca de token extra após o onboarding.
 
 **Observações:**
 - O `complete-onboarding` é **idempotente**: reexecuta a gravação de `Profile`/`Goal` e o flag com o mesmo `accountId` (retry seguro);
 - Erros: `400 INVALID_GRANT` se a troca de code falhar ou faltar dado no token; se a conta existir mas pertencer a outro `externalId`, `409 EMAIL_ALREADY_IN_USE`; se o token for válido mas não houver `Account` registrada, `404 ACCOUNT_NOT_FOUND`;
-- A troca de código tem timeout de 5 segundos.
+- A troca de código tem timeout de 5 segundos;
+- Com o beta fechado, o trigger `PreSignUp` recusa e-mails fora da allowlist e o Cognito redireciona de volta com `error_description` contendo `BETA_ACCESS_DENIED` (o app mostra a mensagem do beta).
 
 ## Fluxo de Planos e Pagamento (Billing)
 
@@ -203,7 +240,7 @@ EXPIRAÇÃO (lazy, sem scheduler):
 
 **Observações:**
 - **Idempotência**: dedup por `event.id` na RateLimitTable (TTL 14d = retenção de reenvio do Asaas) + guards de transição (`paidUntil` só avança · `CHECKOUT_PAID` é no-op);
-- **Endurecimento da rota pública**: 3 camadas: allowlist dos **IPs oficiais do Asaas** (env `ASAAS_WEBHOOK_ALLOWED_IPS`; default = 4 IPs de produção, `*` desabilita em sandbox/dev; checada no adapter **antes** de tudo → `403`), token `asaas-access-token` (`502` se inválido), rate limit por IP 120/60s (`429` + `Retry-After`) e `reservedConcurrency: 5` na função (teto de custo/concorrência);
+- **Endurecimento da rota pública**: 3 camadas: allowlist dos **IPs oficiais do Asaas** (env `ASAAS_WEBHOOK_ALLOWED_IPS`; default = 4 IPs de produção, `*` desabilita em sandbox/dev; checada no adapter **antes** de tudo → `403`), token `asaas-access-token` (`502` se inválido), rate limit por IP 120/60s (`429` + `Retry-After`). O `reservedConcurrency: 5` (teto de custo/concorrência) está temporariamente removido de `sls/functions/billing.yml`: a conta nova de produção tem cota de concorrência baixa e o deploy falharia; volta quando a cota for aumentada;
 - **Join do webhook com a conta**: via `externalReference` (`"<accountId>#<planId>"`) e índice reverso `GATEWAY#<id>` na MainTable (testado com payload real pago no sandbox);
 - **Cota FREE**: `MealQuotaService` usa a RateLimitTable com bucket `YYYY-MM` — a 21ª refeição do mês responde `403 FREE_QUOTA_EXCEEDED`;
 - Trial é **1 por conta** (`409 TRIAL_NOT_AVAILABLE`); cancelar trial é downgrade local (sem gateway), assinatura paga cancela no gateway e mantém `PRO` até `paidUntil` + carência de 3 dias.
@@ -319,6 +356,10 @@ CLOUDFLARE_ACCOUNT_ID=
 CLOUDFLARE_AI_API_TOKEN=
 MEAL_GATE_ENABLED=true
 MEAL_GATE_REJECT_THRESHOLD=0.30
+
+# Beta fechado (opcional)
+BETA_GATE_ENABLED=false
+BETA_ALLOWED_EMAILS=
 ```
 
 ### 4. Realize o deploy na AWS
@@ -333,6 +374,8 @@ Se tudo ocorrer bem, o output esperado será:
 endpoints:
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/auth/sign-up
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/auth/sign-in
+  POST - https://xxx.execute-api.sa-east-1.amazonaws.com/auth/confirm-sign-up
+  POST - https://xxx.execute-api.sa-east-1.amazonaws.com/auth/resend-confirmation-code
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/auth/refresh-token
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/auth/forgot-password
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/auth/confirmation-forgot-password
@@ -344,27 +387,39 @@ endpoints:
   GET  - https://xxx.execute-api.sa-east-1.amazonaws.com/meals
   GET  - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}
 functions:
-  hello: api-dev-hello
-  signUp: api-dev-signUp
-  signIn: api-dev-signIn
-  refreshToken: api-dev-refreshToken
-  forgotPassword: api-dev-forgotPassword
-  confirmationForgotPassword: api-dev-confirmationForgotPassword
-  oauthCallback: api-dev-oauthCallback
-  completeOnboarding: api-dev-completeOnboarding
-  preSignUpTrigger: api-dev-preSignUpTrigger
-  preTokenGenerationTrigger: api-dev-preTokenGenerationTrigger
-  customMessageTrigger: api-dev-customMessageTrigger
-  me: api-dev-me
-  updateProfile: api-dev-updateProfile
-  createMeal: api-dev-createMeal
-  listMeals: api-dev-listMeals
-  getMealById: api-dev-getMealById
-  newMealUploadedTrigger: api-dev-newMealUploadedTrigger
-  processMeal: api-dev-processMeal
+  hello: nacal-api-dev-hello
+  signUp: nacal-api-dev-signUp
+  signIn: nacal-api-dev-signIn
+  confirmSignUp: nacal-api-dev-confirmSignUp
+  resendConfirmationCode: nacal-api-dev-resendConfirmationCode
+  refreshToken: nacal-api-dev-refreshToken
+  forgotPassword: nacal-api-dev-forgotPassword
+  confirmationForgotPassword: nacal-api-dev-confirmationForgotPassword
+  oauthCallback: nacal-api-dev-oauthCallback
+  completeOnboarding: nacal-api-dev-completeOnboarding
+  preSignUpTrigger: nacal-api-dev-preSignUpTrigger
+  preTokenGenerationTrigger: nacal-api-dev-preTokenGenerationTrigger
+  customMessageTrigger: nacal-api-dev-customMessageTrigger
+  me: nacal-api-dev-me
+  updateProfile: nacal-api-dev-updateProfile
+  createMeal: nacal-api-dev-createMeal
+  listMeals: nacal-api-dev-listMeals
+  getMealById: nacal-api-dev-getMealById
+  newMealUploadedTrigger: nacal-api-dev-newMealUploadedTrigger
+  processMeal: nacal-api-dev-processMeal
 ```
 
 O endpoint base da API será: `https://xxx.execute-api.sa-east-1.amazonaws.com`
+
+Para produção, use `AWS_PROFILE=nacal-prod yarn deploy:prod`: o script valida `.env.prod` e executa `sls deploy --stage prod`. O checklist completo está em `../docs/producao-nacal.md`.
+
+`yarn check:prod` (rodado pelo `deploy:prod`) recusa, entre outros:
+- chaves do `.env` ausentes no `.env.prod` (herdariam valores de dev) e valores de exemplo;
+- `APP_WEB_URL` com path ou barra final, e domínios/ARNs fora do esperado;
+- `CORS_ALLOWED_ORIGINS` com `*` ou sem HTTPS;
+- `ASAAS_WEBHOOK_ALLOWED_IPS` com `*` ou com CIDR (a allowlist compara o IP exato);
+- `BETA_GATE_ENABLED`/`MEAL_GATE_ENABLED` diferentes de `true`/`false`, beta ligado sem e-mails ou `BETA_ALLOWED_EMAILS` acima de 2 KB;
+- `AWS_PROFILE` ausente.
 
 ### 5. Configurar o CDN na zona de DNS (opcional)
 
@@ -380,7 +435,9 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 | Método | Url                                  | Descrição                                | Autenticação |
 | ------ | ------------------------------------ | ---------------------------------------- | ------------ |
-| POST   | `/auth/sign-up`                      | Cadastra um novo usuário                 | Pública      |
+| POST   | `/auth/sign-up`                      | Cadastra um novo usuário (pendente até confirmar o e-mail) | Pública      |
+| POST   | `/auth/confirm-sign-up`              | Confirma o e-mail com código e senha e cria a conta | Pública      |
+| POST   | `/auth/resend-confirmation-code`     | Reenvia o código de confirmação          | Pública      |
 | POST   | `/auth/sign-in`                      | Realiza login                            | Pública      |
 | POST   | `/auth/refresh-token`                | Renova tokens de acesso                  | Pública      |
 | POST   | `/auth/forgot-password`              | Solicita código de recuperação de senha  | Pública      |
@@ -392,7 +449,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 | Método | Url         | Descrição                                        | Autenticação |
 | ------ | ----------- | ------------------------------------------------ | ------------ |
-| GET    | `/me`       | Retorna `isOnboarded`, perfil, metas, `subscription` e `mealQuota` do usuário | JWT          |
+| GET    | `/me`       | Retorna `isOnboarded`, perfil, metas, `subscription` e `mealQuota` do usuário (recria a conta se ela faltar após a confirmação) | JWT          |
 | PUT    | `/profiles` | Atualiza o perfil do usuário                     | JWT          |
 
 ### Refeições
@@ -415,7 +472,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 ## Rate Limit
 
-Proteção contra abuso e excesso de requests, implementada **em código** (sem AWS WAF): o decorator `@RateLimit` marca os controllers, o `lambdaHttpAdapter` aplica o enforcement centralizado e contadores **atômicos e condicionais** no DynamoDB (`RateLimitTable`) controlam a janela fixa. Requests bloqueados **não gravam** no banco, e as chaves de IP e de conta são **por rota** (`RL#ip#<rota>#<ip>` e `RL#account#<rota>#<id>` — rotas não disputam o mesmo contador).
+Proteção contra abuso e excesso de requests, implementada **em código** (sem AWS WAF): o decorator `@RateLimit` marca os controllers, o `lambdaHttpAdapter` aplica o enforcement centralizado e contadores **atômicos e condicionais** no DynamoDB (`RateLimitTable`) controlam a janela fixa. Requests bloqueados **não gravam** no banco, e as chaves de IP, de conta e de e-mail são **por rota** (`RL#ip#<rota>#<ip>`, `RL#account#<rota>#<id>` e `RL#email#<rota>#email#<email>` — rotas não disputam o mesmo contador; o e-mail é normalizado com `trim` + minúsculas).
 
 **Custo:** o bloqueio ocorre dentro da Lambda, então um `429` ainda custa API Gateway (~$1,59/1M na `sa-east-1`) + invocação Lambda ($0,20/1M). Requests bloqueados **não** gravam no DynamoDB e **não** chamam Cognito/OpenAI — o volume atual fica coberto pelo free tier (1M requests/mês). Bloquear antes da invocação (WAF rate-based, ~$6/mês) fica como evolução futura.
 
@@ -425,6 +482,8 @@ Proteção contra abuso e excesso de requests, implementada **em código** (sem 
 |---|---|---|
 | `POST /auth/sign-up` | IP | 5 / 15min |
 | `POST /auth/sign-in` | IP + email | 10 / 15min cada |
+| `POST /auth/confirm-sign-up` | IP + email | 10 / 15min cada |
+| `POST /auth/resend-confirmation-code` | IP + email | 3 / 15min cada |
 | `POST /auth/refresh-token` | IP | 60 / 15min |
 | `POST /auth/forgot-password` | IP + email | 5 / 15min (IP) e 5 / 1h (email) |
 | `POST /auth/confirmation-forgot-password` | IP | 10 / 15min |
@@ -453,46 +512,74 @@ com header `Retry-After` em segundos.
 
 #### Sign Up -> `/auth/sign-up`
 
-- Cadastra um novo usuário com perfil e metas nutricionais:
+- Cadastra um novo usuário pendente e envia o código de confirmação por e-mail:
 
   ```bash
   curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/auth/sign-up \
     -H "Content-Type: application/json" \
     -d '{
-      "email": "usuario@email.com",
-      "password": "senha123",
-      "name": "João Silva",
-      "birthDate": "1990-05-15",
-      "gender": "MALE",
-      "height": 175,
-      "weight": 80,
-      "activityLevel": "MODERATE",
-      "goal": "LOSE"
+      "acceptedTerms": true,
+      "account": {
+        "email": "usuario@email.com",
+        "password": "senha1234"
+      },
+      "profile": {
+        "name": "João Silva",
+        "birthDate": "1990-05-15",
+        "gender": "MALE",
+        "height": 175,
+        "weight": 80,
+        "activityLevel": "MODERATE",
+        "goal": "LOSE"
+      }
     }'
   ```
 
-- Request body:
+- Resposta esperada (`201`):
   ```json
   {
-    "email": "usuario@email.com",
-    "password": "senha123",
-    "name": "João Silva",
-    "birthDate": "1990-05-15",
-    "gender": "MALE",
-    "height": 175,
-    "weight": 80,
-    "activityLevel": "MODERATE",
-    "goal": "LOSE"
+    "requiresConfirmation": true,
+    "alreadyPending": false
   }
   ```
 
-- Resposta esperada:
+- Erros: `403 BETA_ACCESS_DENIED` (e-mail fora do beta), `409 EMAIL_ALREADY_IN_USE` (e-mail já confirmado), `429 TOO_MANY_ATTEMPTS`.
+
+#### Confirm Sign Up -> `/auth/confirm-sign-up`
+
+- Confirma o e-mail. A senha é obrigatória (ver "Fluxo de Cadastro por E-mail"):
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/auth/confirm-sign-up \
+    -H "Content-Type: application/json" \
+    -d '{
+      "email": "usuario@email.com",
+      "confirmationCode": "123456",
+      "password": "senha1234"
+    }'
+  ```
+
+- Resposta esperada (`200`):
   ```json
   {
-    "accessToken": "eyJhbGciOiJSUzI1NiIs...",
-    "refreshToken": "eyJhdWQiOiJYLmNv..."
+    "passwordResetRequired": false
   }
   ```
+
+- `passwordResetRequired: true` significa que a senha não bateu e foi substituída; o usuário precisa criar uma nova pelo "esqueci a senha".
+- Erros: `400 INVALID_CONFIRMATION_CODE`, `429 TOO_MANY_ATTEMPTS`.
+
+#### Resend Confirmation Code -> `/auth/resend-confirmation-code`
+
+- Reenvia o código para um cadastro pendente. Responde `204` mesmo se o e-mail não existir:
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/auth/resend-confirmation-code \
+    -H "Content-Type: application/json" \
+    -d '{ "email": "usuario@email.com" }'
+  ```
+
+- Erros: `429 TOO_MANY_ATTEMPTS`, `502 CODE_DELIVERY_FAILED`.
 
 #### Sign In -> `/auth/sign-in`
 
@@ -515,6 +602,8 @@ com header `Retry-After` em segundos.
   }
   ```
 
+- Erros: `401 INVALID_CREDENTIALS`, `403 EMAIL_NOT_CONFIRMED` (cadastro ainda sem código confirmado), `429 TOO_MANY_ATTEMPTS`.
+
 #### OAuth Callback -> `/auth/oauth/callback`
 
 - Troca o `code` de autorização do Google por tokens (fluxo OAuth 2.0 Authorization Code + PKCE). O `codeVerifier` é o mesmo gerado no início do fluxo pelo frontend:
@@ -524,7 +613,7 @@ com header `Retry-After` em segundos.
     -H "Content-Type: application/json" \
     -d '{
       "code": "4/0AfJohXnZ0x9y...",
-      "redirectUri": "https://app.nafoodiary.com/oauth/callback",
+      "redirectUri": "https://app.nacal.app/oauth/callback",
       "codeVerifier": "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStTuUvV"
     }'
   ```
@@ -835,9 +924,9 @@ com header `Retry-After` em segundos.
 
 | Trigger            | Função                      | Descrição                                                                |
 | ------------------ | --------------------------- | ------------------------------------------------------------------------ |
-| PreSignUp          | `preSignUpTrigger`          | Auto-confirma e auto-verifica novos usuários; em `PreSignUp_ExternalProvider` cria usuário nativo "shadow" (`custom:internalId`) e vincula o Identity Provider |
+| PreSignUp          | `preSignUpTrigger`          | Aplica o beta fechado (cadastro por e-mail e Google); em `PreSignUp_ExternalProvider` cria usuário nativo "shadow" (`custom:internalId`) ou reaproveita o nativo existente (confirmando-o se estava pendente) e vincula o Identity Provider. Cadastros por e-mail **não** são mais auto-confirmados |
 | PreTokenGeneration | `preTokenGenerationTrigger` | Injeta o claim `internalId` no access token a partir de `custom:internalId` |
-| CustomMessage      | `customMessageTrigger`      | Personaliza o email de recuperação de senha em português                 |
+| CustomMessage      | `customMessageTrigger`      | Personaliza em português os e-mails de confirmação de cadastro, reenvio de código e recuperação de senha |
 
 ### Eventos S3
 
@@ -872,32 +961,34 @@ com header `Retry-After` em segundos.
 
 ### DynamoDB
 
-- **Table**: `api-{stage}-MainTable`
-  - Single-table design com entidades: Account, Profile, Goal, Meal
-  - `Account` armazena `isOnboarded` (indica se o usuário completou o onboarding; `false` até `complete-onboarding` gravar `Profile`/`Goal`)
+- **Table**: `nacal-api-{stage}-MainTable`
+  - Single-table design com entidades: Account, Profile, Goal, Meal, PendingSignUp
+  - `Account` armazena `isOnboarded` (indica se o usuário completou o onboarding; `false` até `complete-onboarding` gravar `Profile`/`Goal`), `termsVersion` e `termsAcceptedAt`
+  - `PendingSignUp` guarda perfil e aceite de termos de um cadastro por e-mail até a confirmação; expira por TTL (`expiresAt`, 24h)
+  - Proteção contra deleção ativa só no stage `prod`
   - Billing: PAY_PER_REQUEST
   - Point-in-time recovery: 35 dias
   - GSI1 para consultas por email e data
 
-- **Table**: `api-{stage}-RateLimitTable`
+- **Table**: `nacal-api-{stage}-RateLimitTable`
   - Contadores de rate limit por janela (`PK = RL#<scope>#<chave>`, `SK = bucket da janela`)
   - TTL em `expiresAt` para expirar janelas automaticamente
   - Billing: PAY_PER_REQUEST
 
 ### Cognito
 
-- **UserPool**: `api-{stage}-UserPool`
+- **UserPool**: `nacal-api-{stage}-UserPool`
   - Auth flow: USER_PASSWORD_AUTH
   - Username attribute: email
   - Senha: mínimo 8 caracteres
   - Access token: 1 dia
   - Refresh token: 7 dias (com rotação)
-- **UserPoolClient**: `api-{stage}-UserPoolClient`
+- **UserPoolClient**: `nacal-api-{stage}-UserPoolClient`
 - **Google Identity Provider**: Login com Google (Authorization Code + PKCE), scopes `profile email openid`, mapeamento de `name` e `email`, callback para o domínio do frontend
 
 ### S3
 
-- **Bucket**: `api-{stage}-meals-bucket`
+- **Bucket**: `nacal-api-{stage}-meals-bucket`
   - Armazenamento de arquivos de refeição (imagens e áudios)
   - CORS configurado para o frontend
   - Eventos de object creation habilitados
@@ -918,7 +1009,7 @@ com header `Retry-After` em segundos.
 - HTTP API v2 com CORS habilitado
 - JWT Authorizer configurado com o Cognito UserPool para rotas protegidas
 - Rotas de OAuth (`/auth/oauth/callback` e `/auth/complete-onboarding`) são públicas e validam o `accessToken` no body
-- Rotas `/billing/*` são protegidas por JWT, exceto `POST /billing/webhooks/asaas` (pública, endurecida com allowlist de IP dos IPs oficiais do Asaas, rate limit por IP 120/60s e `reservedConcurrency: 5` na função; valida o header `asaas-access-token`)
+- Rotas `/billing/*` são protegidas por JWT, exceto `POST /billing/webhooks/asaas` (pública, endurecida com allowlist de IP dos IPs oficiais do Asaas, rate limit por IP 120/60s; valida o header `asaas-access-token`; `reservedConcurrency` temporariamente desligado)
 - Suporte a domínio personalizado (opcional)
 
 ## Variáveis de Ambiente
@@ -930,8 +1021,9 @@ com header `Retry-After` em segundos.
 | `COGNITO_EMAIL`             | Endereço de email remetente para o Cognito              | Sim         |
 | `COGNITO_EMAIL_TO_REPLY`    | Endereço de email para respostas                        | Sim         |
 | `SES_SOURCE_ARN`            | ARN da identidade SES verificada usada pelo Cognito       | Sim         |
-| `API_DOMAIN_NAME`           | Domínio personalizado da API (ex: `api.nafoodiary.com`) | Não         |
+| `API_DOMAIN_NAME`           | Domínio personalizado da API (ex: `api.nacal.app`) | Não         |
 | `API_CERTIFICATE_ARN`       | ARN do certificado ACM para o domínio da API            | Não         |
+| `CORS_ALLOWED_ORIGINS`      | Origens permitidas no HTTP API (vírgula). Vazio = `*` em dev; em prod use `https://app.nacal.app` | Não (recomendado em prod) |
 | `MEALS_CDN_DOMAIN_NAME`     | Domínio personalizado do CloudFront para arquivos       | Não         |
 | `MEALS_CDN_CERTIFICATE_ARN` | ARN do certificado ACM para o CDN                       | Não         |
 | `DLQ_ALARM_EMAIL`           | Email para notificações de falha no processamento       | Sim         |
@@ -944,7 +1036,9 @@ com header `Retry-After` em segundos.
 | `ASAAS_API_KEY`             | Chave de acesso da Asaas (enviada como `access_token`)  | Sim         |
 | `ASAAS_WEBHOOK_TOKEN`       | Token esperado no header `asaas-access-token` do webhook | Sim        |
 | `ASAAS_WEBHOOK_ALLOWED_IPS` | Allowlist de IPs de origem do webhook (separada por vírgula). Padrão: IPs oficiais de produção do Asaas. `*` desabilita (dev/sandbox) | Não (default = 4 IPs de produção) |
-| `APP_WEB_URL`               | Origin do app web — allowlist da `returnUrl` do checkout | Sim        |
+| `APP_WEB_URL`               | Origin do app web (sem path nem barra final) — allowlist da `returnUrl` do checkout e `AllowedOrigin` do CORS do bucket de refeições | Sim        |
+| `BETA_GATE_ENABLED`         | Liga o beta fechado (`true`/`1`); um valor não reconhecido mantém o beta **fechado** | Não (default `false`) |
+| `BETA_ALLOWED_EMAILS`       | E-mails liberados no beta, separados por vírgula. Vai para todas as funções (limite de 4 KB de env do Lambda; o `check:prod` avisa acima de 1 KB) | Não |
 | `GOOGLE_CLIENT_ID`          | Client ID do provider Google no Cognito                 | Sim (login Google) |
 | `GOOGLE_CLIENT_SECRET`      | Client secret do provider Google no Cognito             | Sim (login Google) |
 
@@ -1047,7 +1141,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
    ```bash
    sls remove
 
-   aws cloudformation describe-stacks --stack-name api-{stage}
+   aws cloudformation describe-stacks --stack-name nacal-api-{stage}
    # Repita até o comando responder "does not exist"
    ```
 
@@ -1055,16 +1149,16 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 
    - **Log group do custom resource** (o Framework não remove): 
      ```bash
-     aws logs delete-log-group --log-group-name /aws/lambda/api-{stage}-custom-resource-existing-s3
+     aws logs delete-log-group --log-group-name /aws/lambda/nacal-api-{stage}-custom-resource-existing-s3
      ```
    - **Bucket órfão** do `MealsBucket` (`DeletionPolicy: Retain`), se ainda existir:
      ```bash
-     aws s3 rb s3://nafoodiary-api-{stage}-meals-bucket --force
+      aws s3 rb s3://nacal-api-{stage}-meals-bucket --force
      ```
 
 3. Caso use `MEALS_CDN_DOMAIN_NAME`: garanta que o CNAME na zona de DNS **não aponte para a distribuição CloudFront antiga/deletada** (o CloudFront rejeita criar o alias enquanto o DNS apontar para outro CloudFront). Corrija o registro de DNS antes de continuar — ver "Configurar o CDN na zona de DNS" no passo a passo.
 
-4. Aguarde o "cooldown" do domínio do UserPool (`nafoodiary.auth.sa-east-1.amazoncognito.com`), se o deploy falhar com domínio indisponível, aguarde alguns minutos e rode o deploy novamente.
+4. Aguarde o "cooldown" do domínio do UserPool (`nacal-dev.auth.sa-east-1.amazoncognito.com`), se o deploy falhar com domínio indisponível, aguarde alguns minutos e rode o deploy novamente.
 
 5. Rode o deploy e recrie o CNAME do CDN apontando para o domain da nova distribuição:
 
@@ -1094,7 +1188,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 - Verifique os logs da Lambda `processMeal` no CloudWatch;
 - Confirme que a `OPENAI_API_KEY` está configurada e é válida;
 - Verifique se o formato do arquivo é suportado (imagens: JPEG; áudios: M4A, WebM);
-- Após 2 tentativas, a refeição fica `FAILED` e a mensagem é descartada; falhas inesperadas que esgotam as 3 entregas da fila vão para a Dead Letter Queue e disparam alarme por email.
+- Após 2 tentativas, a refeição fica `FAILED`, a cota é estornada, o arquivo é removido e a mensagem é descartada; falhas inesperadas que esgotam as 3 entregas da fila vão para a Dead Letter Queue e disparam alarme por email.
 
 ### Erro 401 / Token inválido
 - Verifique se o header `Authorization: Bearer <token>` está sendo enviado;
@@ -1108,9 +1202,14 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 - Se precisar ajustar um limite, basta alterar o decorator `@RateLimit` no controller correspondente.
 
 ### Erro de CORS
-- Verifique se o CORS está habilitado no `serverless.yml` (`httpApi.cors: true`);
-- Para domínios de produção, configure o CORS no API Gateway;
+- O CORS do HTTP API vem de `sls/config/cors.js`: `CORS_ALLOWED_ORIGINS` vazio libera todas as origens (dev); em produção use só `https://app.nacal.app`;
+- O upload direto para o S3 usa o CORS do bucket, cuja origem é `APP_WEB_URL` exata (sem barra final);
 - Após mudanças, faça novo deploy: `sls deploy`.
+
+### Confirmação de e-mail
+- `403 EMAIL_NOT_CONFIRMED` no login: o cadastro ainda não foi confirmado; use `POST /auth/resend-confirmation-code` e depois `POST /auth/confirm-sign-up`;
+- `passwordResetRequired: true` na confirmação: a senha enviada não era a do cadastro; o usuário cria uma nova pelo "esqueci a senha";
+- Usuário confirmado pelo console do Cognito não fica com `email_verified = true`, e o `GET /me` não recria a conta; marque o atributo com `aws cognito-idp admin-update-user-attributes ... Name=email_verified,Value=true`.
 
 ### Erro ao cadastrar usuário (Sign Up)
 - Verifique se o `COGNITO_EMAIL` e `SES_SOURCE_ARN` estão configurados;
@@ -1132,11 +1231,11 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 - Corrija o registro de DNS (aponte para longe ou apague), rode o `sls deploy` e recrie o CNAME apontando para o domain da nova distribuição (ver "Configurar o CDN na zona de DNS").
 
 ### Deploy falha porque o log group do custom resource existe
-- O `sls remove` não apaga o log group `/aws/lambda/api-{stage}-custom-resource-existing-s3`;
+- O `sls remove` não apaga o log group `/aws/lambda/nacal-api-{stage}-custom-resource-existing-s3`;
 - Remova manualmente antes de um novo deploy:
 
   ```bash
-  aws logs delete-log-group --log-group-name /aws/lambda/api-{stage}-custom-resource-existing-s3
+  aws logs delete-log-group --log-group-name /aws/lambda/nacal-api-{stage}-custom-resource-existing-s3
   ```
 
 ### Alarme de Dead Letter Queue
