@@ -1,5 +1,6 @@
 import { AdminCreateUserCommand, AdminLinkProviderForUserCommand, AdminSetUserPasswordCommand, AdminUpdateUserAttributesCommand, paginateListUsers, UserType } from '@aws-sdk/client-cognito-identity-provider';
 import { cognitoClient } from '@infra/clients/cognitoClient';
+import { isBetaAllowed } from '@shared/config/betaAccess';
 import { generateUniqueId } from '@shared/utils/generateUniqueId';
 import { PreSignUpTriggerEvent } from 'aws-lambda';
 
@@ -12,8 +13,8 @@ export async function handler(event: PreSignUpTriggerEvent) {
   const { email: rawEmail, name } = event.request.userAttributes;
   const email = rawEmail?.trim().toLowerCase();
 
-  if (!email) {
-    throw new Error('Missing email.');
+  if (!email || !isBetaAllowed(email)) {
+    throw new Error('BETA_ACCESS_DENIED');
   }
 
   if (event.triggerSource !== 'PreSignUp_ExternalProvider') {

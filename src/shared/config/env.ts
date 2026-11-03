@@ -19,6 +19,8 @@ export const envSchema = z.object({
   CLOUDFLARE_AI_API_TOKEN: z.optional(z.string()),
   MEAL_GATE_ENABLED: z.optional(z.string()),
   MEAL_GATE_REJECT_THRESHOLD: z.optional(z.string()),
+  BETA_GATE_ENABLED: z.optional(z.string()),
+  BETA_ALLOWED_EMAILS: z.optional(z.string()),
 });
 
 export const env = envSchema.parse(process.env);

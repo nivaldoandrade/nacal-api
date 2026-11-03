@@ -1,10 +1,12 @@
 import { PendingSignUp } from '@application/entities/PendingSignUp';
 import { Profile } from '@application/entities/Profile';
+import { BetaAccessDenied } from '@application/errors/application/BetaAccessDenied';
 import { EmailAlreadyInUse } from '@application/errors/application/EmailAlreadyInUse';
 import { AccountsRepository } from '@infra/databases/dynamodb/AccountsRepository';
 import { PendingSignUpRepository } from '@infra/databases/dynamodb/PendingSignUpRepository';
 import { AuthGateway } from '@infra/gateways/AuthGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { isBetaAllowed } from '@shared/config/betaAccess';
 import { TERMS_VERSION } from '@shared/config/terms';
 import { generateUniqueId } from '@shared/utils/generateUniqueId';
 import { normalizeEmail } from '@shared/utils/normalizeEmail';
@@ -24,6 +26,10 @@ export class SignUpUseCase {
 
     const email = normalizeEmail(accountInput.email);
     const { password } = accountInput;
+
+    if (!isBetaAllowed(email)) {
+      throw new BetaAccessDenied();
+    }
 
     const emailIsAlreadyInUse = await this.accountsRepository.findByEmail(email);
 
