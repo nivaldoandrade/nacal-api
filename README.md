@@ -14,7 +14,8 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Validação de mídia**: Confere assinatura real do arquivo, tamanho e duração antes de chamar a IA; arquivos inválidos viram `REJECTED` (`INVALID_FILE`) com estorno de cota;
 - **Gate de foto**: Pré-filtro no Cloudflare Workers AI (Clef-flash) rejeita fotos que claramente não são comida/bebida antes da OpenAI; falhas do gate são fail-open;
 - **Análise por IA**: Identificação automática de alimentos com quantidades e macronutrientes via IA;
-- **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio sobrepondo o horário;
+- **Descrição opcional na foto**: Texto livre (até 300 caracteres) enviado junto com a foto para completar o que a imagem não mostra (bebida em copo opaco, ingrediente escondido, quantidade, qual refeição foi);
+- **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio ou na descrição da foto sobrepondo o horário;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
@@ -77,7 +78,7 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 ## Fluxo de Processamento de Refeições
 
 ### 1. Upload e Criação
-1. Usuário envia `POST /create-meal` com `{ contentType, fileSize, timeZone? }`;
+1. Usuário envia `POST /create-meal` com `{ contentType, fileSize, timeZone?, description? }` (`description` só para fotos);
 2. Backend cria a refeição no DynamoDB (status: `UPLOADING`) e retorna um `mealId` junto com dados do Presigned POST (base64);
 3. Frontend faz upload direto para o S3 usando o Presigned POST;
 4. S3 recebe o arquivo e dispara evento `ObjectCreated`.
@@ -88,10 +89,11 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 7. Lambda `processMeal` consome a mensagem, reivindica a refeição com lease condicional (`PROCESSING`) e baixa o arquivo do S3;
 8. Valida o arquivo real (assinatura/magic bytes), tamanho e duração: foto JPEG até 10 MB; áudio M4A/WebM até 2 MB e 1–32s. Arquivo inválido vira `REJECTED` (`INVALID_FILE`), com estorno de cota e remoção do arquivo;
 9. Para **fotos**, o gate Clef-flash avalia se há comida/bebida. Score abaixo de `0.30` vira `REJECTED` (`NOT_A_MEAL`), com estorno de cota; falha, timeout ou resposta inválida do gate não bloqueiam o processamento (fail-open);
-10. Para **áudios**, transcreve via GPT-4o-mini-transcribe, depois envia o texto para o GPT-5.4-mini. Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
-11. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e, para áudios, um `mealType` opcional quando o usuário declara a refeição;
-12. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
-13. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
+10. Para **fotos**, a imagem vai para o GPT-5.4-mini junto com a `description`, quando enviada, delimitada em `<user_note>` (com `<`/`>` neutralizados). A nota acrescenta itens não visíveis e corrige identidade/quantidade dos visíveis, dentro do plausível para a imagem; ela é tratada como dado, nunca como instrução, e não monta a refeição sozinha se a foto não mostra comida;
+11. Para **áudios**, transcreve via GPT-4o-mini-transcribe, depois envia o texto para o GPT-5.4-mini. Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
+12. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e um `mealType` opcional quando o usuário declara a refeição (no áudio ou na descrição da foto);
+13. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
+14. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
 
 ## Validação, gate e rejeição
 
@@ -153,7 +155,7 @@ App                                   API                                   Cogn
 
 ## Classificação da Refeição (nome e ícone)
 
-O nome e o ícone **não** são definidos pela IA: a API os deriva do **horário da refeição interpretado no fuso do usuário** (o `timeZone` IANA enviado no `POST /create-meal`, com fallback `America/Sao_Paulo`). Quando o usuário **declara explicitamente** a refeição no áudio (por exemplo, "almocei", "estou jantando"), a IA devolve um `mealType` opcional que **sobrepõe** o horário; menções genéricas ou negadas ficam como `null` e caem no horário.
+O nome e o ícone **não** são definidos pela IA: a API os deriva do **horário da refeição interpretado no fuso do usuário** (o `timeZone` IANA enviado no `POST /create-meal`, com fallback `America/Sao_Paulo`). Quando o usuário **declara explicitamente** a refeição no áudio ou na descrição da foto (por exemplo, "almocei", "estou jantando", "foi meu almoço"), a IA devolve um `mealType` opcional que **sobrepõe** o horário; menções genéricas ou negadas ficam como `null` e caem no horário.
 
 | Horário (local) | Nome            | Ícone | `mealType` da IA  |
 | --------------- | --------------- | ----- | ----------------- |
@@ -706,11 +708,13 @@ com header `Retry-After` em segundos.
     -d '{
       "contentType": "image/jpeg",
       "fileSize": 5242880,
-      "timeZone": "America/Sao_Paulo"
+      "timeZone": "America/Sao_Paulo",
+      "description": "tinha um copo de suco de laranja também"
     }'
   ```
 
 - `timeZone` é a zona IANA do dispositivo (ex.: `America/Sao_Paulo`, `Europe/Lisbon`), usada para nomear a refeição; é opcional e cai em `America/Sao_Paulo` se ausente/inválida.
+- `description` é opcional e só aceita fotos (em áudio retorna `400`): texto livre de até 300 caracteres após `trim`; string vazia é tratada como ausente. Não aparece nas respostas de leitura da refeição.
 - `contentType` aceito: `image/jpeg` (até 10 MB), `audio/m4a` ou `audio/webm` (até 2 MB e 1–32s); `fileSize` é em bytes. A validação real do conteúdo acontece no processamento e um arquivo inválido vira `REJECTED`.
 
 - Resposta esperada:

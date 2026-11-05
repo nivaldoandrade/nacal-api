@@ -19,6 +19,8 @@ export class Meal {
 
   readonly timeZone: string;
 
+  readonly description: string | null;
+
   name: string;
 
   attempts: number;
@@ -48,6 +50,7 @@ export class Meal {
     this.inputFileKey = attr.inputFileKey;
     this.inputType = attr.inputType;
     this.timeZone = attr.timeZone ?? '';
+    this.description = attr.description ?? null;
     this.attempts = attr.attempts ?? 0;
     this.name = attr.name ?? '';
     this.icon = attr.icon ?? '';
@@ -71,6 +74,7 @@ export namespace Meal {
     inputFileKey: string;
     inputType: Meal.InputType;
     timeZone?: string;
+    description?: string | null;
     attempts?: number;
     name?: string;
     icon?: string;

@@ -52,6 +52,25 @@ export class MealAiGateway {
   }
 
   private async processMealByImage(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
+    const userContent: OpenAI.Responses.ResponseInputMessageContentList = [
+      {
+        type: 'input_image',
+        image_url: this.mealFileStorageGateway.getFileURL(meal.inputFileKey),
+        detail: 'high',
+      },
+    ];
+
+    if (meal.description) {
+      const safeDescription = meal.description
+        .replace(/</g, '‹')
+        .replace(/>/g, '›');
+
+      userContent.push({
+        type: 'input_text',
+        text: `<user_note>\n${safeDescription}\n</user_note>`,
+      });
+    }
+
     const input: OpenAI.Responses.ResponseInput = [
       {
         role: 'system',
@@ -59,13 +78,7 @@ export class MealAiGateway {
       },
       {
         role: 'user',
-        content: [
-          {
-            type: 'input_image',
-            image_url: this.mealFileStorageGateway.getFileURL(meal.inputFileKey),
-            detail: 'high',
-          },
-        ],
+        content: userContent,
       },
     ];
 

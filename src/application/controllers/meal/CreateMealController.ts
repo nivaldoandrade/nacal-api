@@ -17,7 +17,7 @@ export class CreateMealController extends Controller<'private'> {
 
   protected async handler(request: Controller.RequestPrivate<CreateMealBody>): Promise<Controller.Response<CreateMealController.Response>> {
     const accountId = request.accountId;
-    const { contentType, fileSize, timeZone } = request.body;
+    const { contentType, fileSize, timeZone, description } = request.body;
 
     const inputFile = Meal.getInputFile(contentType);
 
@@ -27,6 +27,7 @@ export class CreateMealController extends Controller<'private'> {
     } = await this.createMealUseCase.execute({
       accountId,
       timeZone,
+      description,
       file: {
         mimeType: contentType,
         inputType: inputFile.inputType,

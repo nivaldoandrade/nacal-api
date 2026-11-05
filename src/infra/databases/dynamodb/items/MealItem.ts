@@ -95,6 +95,7 @@ export namespace MealItem {
     inputFileKey: string;
     inputType: Meal.InputType;
     timeZone?: string;
+    description?: string | null;
     attempts?: number;
     name: string;
     icon?: string;

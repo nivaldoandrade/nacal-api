@@ -37,11 +37,16 @@ type MimeType = 'audio/m4a' | 'image/jpeg' | 'audio/3gp' | 'audio/webm';
 //   - Almoço:   localHourOverride: 14
 //   - Café:     localHourOverride: 8
 //   - Override por áudio ("estou almoçando" às 16h): mimeType audio/m4a + localHourOverride: 16
+// description:      texto opcional enviado junto com a foto (só imagem; a API recusa em áudio)
+//   - Item fora da foto:   'tinha um copo de coca 350ml também'
+//   - Tipo de refeição:    'foi meu almoço'
+//   - Sem descrição:       undefined
 const CONFIG = {
-  file: path.resolve(__dirname, 'assets', 'audio-cafe.m4a'),
-  mimeType: 'audio/m4a' as MimeType,
+  file: path.resolve(__dirname, 'assets', 'image.jpg'),
+  mimeType: 'image/jpeg' as MimeType,
   timeZone: 'America/Sao_Paulo' as string | undefined,
-  localHourOverride: 22 as number | undefined,
+  localHourOverride: undefined as number | undefined,
+  description: 'tinha um latinha de coca zero 350ml também, foi meu almoço' as string | undefined,
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -83,6 +88,7 @@ async function createMeal(
   fileType: string,
   fileSize: number,
   timeZone?: string,
+  description?: string,
 ): Promise<ICreateMealResponse> {
   console.log(`🚀 Requesting presigned POST for ${fileSize} bytes of type ${fileType}`);
   const res = await fetch(API_URL, {
@@ -91,7 +97,7 @@ async function createMeal(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${TOKEN}`,
     },
-    body: JSON.stringify({ contentType: fileType, fileSize, timeZone }),
+    body: JSON.stringify({ contentType: fileType, fileSize, timeZone, description }),
   });
 
   if (!res.ok) {
@@ -142,10 +148,11 @@ async function uploadToS3(url: string, form: FormData): Promise<void> {
   console.log('🎉 Upload completed successfully');
 }
 
-async function uploadFile({ file, mimeType, timeZone }: IUploadFileParams): Promise<void> {
+async function uploadFile({ file, mimeType, timeZone, description }: IUploadFileParams): Promise<void> {
   try {
     const { data, size, type } = await readFile(file, mimeType);
-    const { url, fields } = await createMeal(type, size, timeZone);
+    const { url, fields, mealId } = await createMeal(type, size, timeZone, description);
+    console.log(`🆔 mealId: ${mealId}`);
     const form = buildFormData(fields, data, path.basename(file), type);
     await uploadToS3(url, form);
   } catch (err) {
@@ -158,6 +165,7 @@ interface IUploadFileParams {
   file: string;
   mimeType: MimeType;
   timeZone?: string;
+  description?: string;
 }
 
 const effectiveTimeZone = CONFIG.localHourOverride !== undefined
@@ -165,9 +173,11 @@ const effectiveTimeZone = CONFIG.localHourOverride !== undefined
   : CONFIG.timeZone;
 
 console.log(`🧭 timeZone usada pela API: ${effectiveTimeZone ?? '(fallback da API)'}`);
+console.log(`📝 description: ${CONFIG.description ?? '(sem descrição)'}`);
 
 uploadFile({
   file: CONFIG.file,
   mimeType: CONFIG.mimeType,
   timeZone: effectiveTimeZone,
+  description: CONFIG.description,
 }).catch(() => process.exit(1));
