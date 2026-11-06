@@ -7,6 +7,12 @@ export class Meal {
   // Must stay above the processMeal timeout (120s) and below the SQS visibility timeout (180s).
   public static readonly PROCESSING_LEASE_SECONDS: number = 130;
 
+  public static readonly MAX_ITEM_ADDITIONS: number = 5;
+
+  public static readonly MAX_FOODS: number = 30;
+
+  public static readonly EDIT_WINDOW_HOURS: number = 24;
+
   readonly id: string;
 
   readonly accountId: string;
@@ -39,9 +45,13 @@ export class Meal {
 
   leaseExpiresAt: number | null;
 
+  itemAdditions: number;
+
   readonly createdAt: Date;
 
   rejectedAt: Date | null;
+
+  editedAt: Date | null;
 
   constructor(attr: Meal.Attributes) {
     this.id = attr.id;
@@ -60,8 +70,29 @@ export class Meal {
     this.quotaMonth = attr.quotaMonth ?? null;
     this.quotaRefunded = attr.quotaRefunded ?? false;
     this.leaseExpiresAt = attr.leaseExpiresAt ?? null;
+    this.itemAdditions = attr.itemAdditions ?? 0;
     this.createdAt = attr.createdAt ?? new Date();
     this.rejectedAt = attr.rejectedAt ?? null;
+    this.editedAt = attr.editedAt ?? null;
+  }
+
+  isEditable(now: Date = new Date()): boolean {
+    if (this.status !== Meal.StatusType.SUCCESS) {
+      return false;
+    }
+
+    const editWindowMs = Meal.EDIT_WINDOW_HOURS * 60 * 60 * 1000;
+
+    return now.getTime() - this.createdAt.getTime() <= editWindowMs;
+  }
+
+  hasReachedItemLimit(): boolean {
+    return this.itemAdditions >= Meal.MAX_ITEM_ADDITIONS
+      || this.foods.length >= Meal.MAX_FOODS;
+  }
+
+  canAddItems(now: Date = new Date()): boolean {
+    return this.isEditable(now) && !this.hasReachedItemLimit();
   }
 
 }
@@ -84,8 +115,10 @@ export namespace Meal {
     quotaMonth?: string | null;
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
+    itemAdditions?: number;
     createdAt?: Date;
     rejectedAt?: Date | null;
+    editedAt?: Date | null;
   }
 
   export const StatusType = {
@@ -153,6 +186,13 @@ export namespace Meal {
     };
   }
 
+  export const FoodSource = {
+    INITIAL: 'INITIAL',
+    ADDED: 'ADDED',
+  } as const;
+
+  export type FoodSource = ValueOf<typeof FoodSource>;
+
   export type FoodType = {
     name: string;
     quantity: string;
@@ -160,6 +200,13 @@ export namespace Meal {
     proteins: number;
     carbohydrates: number;
     fats: number;
+    source?: FoodSource;
   };
+
+  export type FoodMacros = Pick<FoodType, 'carbohydrates' | 'proteins' | 'fats'>;
+
+  export function computeCalories({ carbohydrates, proteins, fats }: FoodMacros): number {
+    return Math.round((carbohydrates * 4) + (proteins * 4) + (fats * 9));
+  }
 
 }

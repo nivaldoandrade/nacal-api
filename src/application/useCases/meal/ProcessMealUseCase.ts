@@ -103,7 +103,8 @@ export class ProcessMealUseCase {
       claimedMeal.icon = icon;
       claimedMeal.foods = foods.map(food => ({
         ...food,
-        calories: Math.round((food.carbohydrates * 4) + (food.proteins * 4) + (food.fats * 9)),
+        calories: Meal.computeCalories(food),
+        source: Meal.FoodSource.INITIAL,
       }));
 
       const markedAsSuccess = await this.mealRepository.markSuccess({

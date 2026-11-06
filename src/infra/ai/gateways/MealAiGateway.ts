@@ -6,23 +6,28 @@ import { z } from 'zod';
 import { Meal } from '@application/entities/Meal';
 import { MealRejectedError } from '@application/errors/MealRejectedError';
 import { MealNamingService } from '@application/services/MealNamingService';
+import { getAddItemsPrompt } from '@infra/ai/prompts/getAddItemsPrompt';
 import { getImagePrompt } from '@infra/ai/prompts/getImagePrompt';
 import { getTextPrompt } from '@infra/ai/prompts/getTextPrompt';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { downloadByURL } from '@infra/utils/downloadByURL';
 import { Injectable } from '@kernel/decorators/Injectable';
 
+const foodSchema = z.object({
+  name: z.string(),
+  quantity: z.string(),
+  carbohydrates: z.number(),
+  fats: z.number(),
+  proteins: z.number(),
+});
+
 const schema = z.object({
   mealType: z.enum(MealNamingService.MEAL_TYPES).nullable(),
-  foods: z.array(
-    z.object({
-      name: z.string(),
-      quantity: z.string(),
-      carbohydrates: z.number(),
-      fats: z.number(),
-      proteins: z.number(),
-    }),
-  ),
+  foods: z.array(foodSchema),
+});
+
+const addItemsSchema = z.object({
+  foods: z.array(foodSchema),
 });
 
 @Injectable()
@@ -61,13 +66,9 @@ export class MealAiGateway {
     ];
 
     if (meal.description) {
-      const safeDescription = meal.description
-        .replace(/</g, '‹')
-        .replace(/>/g, '›');
-
       userContent.push({
         type: 'input_text',
-        text: `<user_note>\n${safeDescription}\n</user_note>`,
+        text: `<user_note>\n${MealAiGateway.sanitize(meal.description)}\n</user_note>`,
       });
     }
 
@@ -82,9 +83,46 @@ export class MealAiGateway {
       },
     ];
 
-    const processedMeal = await this.callOpenAI(meal, input);
+    const processedMeal = await this.callOpenAI(meal.id, input, schema);
 
     return processedMeal;
+  }
+
+  async extractFoodsFromText({
+    mealId,
+    text,
+    existingFoods,
+  }: MealAiGateway.ExtractFoodsFromText['params']): Promise<MealAiGateway.ExtractFoodsFromText['result']> {
+    const registeredItems = existingFoods
+      .map((food) => `${food.name} (${food.quantity})`)
+      .join('; ');
+
+    const input: OpenAI.Responses.ResponseInput = [
+      {
+        role: 'system',
+        content: getAddItemsPrompt(),
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `<registered_items>\n${MealAiGateway.sanitize(registeredItems)}\n</registered_items>`,
+              `<user_note>\n${MealAiGateway.sanitize(text)}\n</user_note>`,
+            ].join('\n'),
+          },
+        ],
+      },
+    ];
+
+    try {
+      const { foods } = await this.callOpenAI(mealId, input, addItemsSchema);
+
+      return { foods };
+    } catch (error) {
+      throw new Error(`[OPEN AI] ${error}`, { cause: error });
+    }
   }
 
   private async processMealByAudio(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
@@ -106,7 +144,7 @@ export class MealAiGateway {
       },
     ];
 
-    const processedMeal = await this.callOpenAI(meal, input);
+    const processedMeal = await this.callOpenAI(meal.id, input, schema);
 
     return processedMeal;
   }
@@ -136,12 +174,22 @@ export class MealAiGateway {
 
   }
 
-  private async callOpenAI(meal: Meal, input: OpenAI.Responses.ResponseInput) {
+  private static sanitize(value: string): string {
+    return value
+      .replace(/</g, '‹')
+      .replace(/>/g, '›');
+  }
+
+  private async callOpenAI<TSchema extends z.ZodType>(
+    mealId: string,
+    input: OpenAI.Responses.ResponseInput,
+    outputSchema: TSchema,
+  ): Promise<z.infer<TSchema>> {
     const response = await this.client.responses.create({
       model: 'gpt-5.4-mini',
       input,
       text: {
-        format: zodTextFormat(schema, 'meal'),
+        format: zodTextFormat(outputSchema, 'meal'),
       },
     });
 
@@ -150,7 +198,7 @@ export class MealAiGateway {
 
     if (!output_text) {
       console.error(`OPEN AI response: ${openAiResponseStringify}`);
-      throw new Error(`OPEN AI error in meal: ${meal.id}`);
+      throw new Error(`OPEN AI error in meal: ${mealId}`);
     }
 
     let parsedOutput: unknown;
@@ -159,7 +207,7 @@ export class MealAiGateway {
       parsedOutput = JSON.parse(output_text);
     } catch (error) {
       throw new Error(
-        `OPEN AI invalid JSON response in meal: ${meal.id}`,
+        `OPEN AI invalid JSON response in meal: ${mealId}`,
         { cause: error },
       );
     }
@@ -168,12 +216,12 @@ export class MealAiGateway {
       success,
       data,
       error,
-    } = schema.safeParse(parsedOutput);
+    } = outputSchema.safeParse(parsedOutput);
 
     if (!success) {
       console.log(`Zod error: ${JSON.stringify(error.issues, null, 2)}`);
       console.error(`OPEN AI response: ${openAiResponseStringify}`);
-      throw new Error(`OPEN AI error in meal: ${meal.id}`);
+      throw new Error(`OPEN AI error in meal: ${mealId}`);
     }
 
     return data;
@@ -184,5 +232,14 @@ export class MealAiGateway {
 export namespace MealAiGateway {
   export type ProcessMeal = {
     result: z.infer<typeof schema>;
+  }
+
+  export type ExtractFoodsFromText = {
+    params: {
+      mealId: string;
+      text: string;
+      existingFoods: Meal.FoodType[];
+    };
+    result: z.infer<typeof addItemsSchema>;
   }
 }

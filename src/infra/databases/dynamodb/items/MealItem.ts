@@ -25,6 +25,7 @@ export class MealItem {
       ...meal,
       createdAt: meal.createdAt.toISOString(),
       rejectedAt: meal.rejectedAt?.toISOString() ?? null,
+      editedAt: meal.editedAt?.toISOString() ?? null,
     });
   }
 
@@ -33,6 +34,7 @@ export class MealItem {
       ...mealIdAttr,
       createdAt: new Date(mealIdAttr.createdAt),
       rejectedAt: mealIdAttr.rejectedAt ? new Date(mealIdAttr.rejectedAt) : null,
+      editedAt: mealIdAttr.editedAt ? new Date(mealIdAttr.editedAt) : null,
     });
   }
 
@@ -105,8 +107,10 @@ export namespace MealItem {
     quotaMonth?: string | null;
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
+    itemAdditions?: number;
     createdAt: string;
     rejectedAt?: string | null;
+    editedAt?: string | null;
   }
 
   export type ItemType = Keys & Attributes & {

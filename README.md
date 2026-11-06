@@ -15,6 +15,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Gate de foto**: Pré-filtro no Cloudflare Workers AI (Clef-flash) rejeita fotos que claramente não são comida/bebida antes da OpenAI; falhas do gate são fail-open;
 - **Análise por IA**: Identificação automática de alimentos com quantidades e macronutrientes via IA;
 - **Descrição opcional na foto**: Texto livre (até 300 caracteres) enviado junto com a foto para completar o que a imagem não mostra (bebida em copo opaco, ingrediente escondido, quantidade, qual refeição foi);
+- **Adicionar item por texto**: Depois do processamento, o usuário pode completar uma refeição `SUCCESS` com um texto curto ("um copo de coca 350ml"); a IA devolve só os itens novos, que são anexados à refeição. Não consome cota, mas é bloqueado para Free sem cota restante; até 5 adições por refeição, só nas primeiras 24h e até 30 itens;
 - **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio ou na descrição da foto sobrepondo o horário;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
@@ -388,6 +389,7 @@ endpoints:
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/create-meal
   GET  - https://xxx.execute-api.sa-east-1.amazonaws.com/meals
   GET  - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}
+  POST - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}/items
 functions:
   hello: nacal-api-dev-hello
   signUp: nacal-api-dev-signUp
@@ -460,7 +462,8 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 | ------ | ------------------------ | ------------------------------------------------------ | ------------ |
 | POST   | `/create-meal`           | Cria uma refeição (JPEG ≤10 MB ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
-| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl` e alimentos | JWT          |
+| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos e `canAddItems` | JWT          |
+| POST   | `/meals/{id}/items`      | Adiciona itens a uma refeição `SUCCESS` a partir de texto (IA síncrona) | JWT          |
 
 ### Billing
 
@@ -492,6 +495,7 @@ Proteção contra abuso e excesso de requests, implementada **em código** (sem 
 | `POST /auth/oauth/callback` | IP | 30 / 15min |
 | `POST /auth/complete-onboarding` | IP | 30 / 15min |
 | `POST /create-meal` | conta | 10 / 1h |
+| `POST /meals/{id}/items` | conta | 20 / 1h |
 | `POST /billing/trial` | conta | 5 / 1h |
 | `POST /billing/webhooks/asaas` | IP | 120 / 60s |
 
@@ -815,11 +819,62 @@ com header `Retry-After` em segundos.
     "name": "",
     "icon": "",
     "foods": [],
+    "canAddItems": false,
     "createdAt": "2026-10-22T15:00:00.000Z"
   }
   ```
 
 - Em `REJECTED`, `inputFileUrl` é `null` porque o arquivo é removido do S3; `rejectionReason` indica o motivo (`INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`).
+- `canAddItems` indica se a refeição ainda aceita `POST /meals/{id}/items` (status `SUCCESS`, dentro das 24h e abaixo dos limites); não considera a cota do plano Free.
+- Cada alimento pode trazer `source`: `INITIAL` (identificado no processamento) ou `ADDED` (adicionado por texto). Refeições antigas não têm o campo.
+
+#### Add Meal Items -> `/meals/{id}/items`
+
+- Adiciona itens a uma refeição já processada a partir de um texto curto:
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/meals/2CkS0wZr5cY3xK1mN7jQ9bT2vL/items \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..." \
+    -H "Content-Type: application/json" \
+    -d '{ "text": "um copo de coca 350ml" }'
+  ```
+
+- `text` é obrigatório: 1 a 300 caracteres após `trim`.
+- A chamada à OpenAI é **síncrona** (GPT-5.4-mini, prompt `getAddItemsPrompt`, Lambda com `timeout: 29`). A IA recebe os itens já registrados em `<registered_items>` e o texto em `<user_note>` (com `<`/`>` neutralizados, tratados como dado) e devolve só os itens novos. Itens já registrados não são duplicados, exceto quando o usuário pede uma porção extra ("mais um arroz"), que entra como uma linha nova.
+- Calorias calculadas no backend (`carbs*4 + prot*4 + fat*9`); os itens novos entram com `source: "ADDED"`.
+- **Não consome cota**, mas responde `403 FREE_QUOTA_EXCEEDED` se o usuário Free já não tem cota no mês (checado antes da IA).
+- Limites: até **5 adições por refeição**, só **até 24h** depois de `createdAt` e no máximo **30 itens**. O append é condicional no DynamoDB (status, janela, adições e itens), então requests concorrentes não furam os limites. Itens que a IA devolveu e não couberam são descartados e contados em `skippedFoodsCount`.
+
+- Resposta esperada:
+  ```json
+  {
+    "meal": {
+      "id": "2CkS0wZr5cY3xK1mN7jQ9bT2vL",
+      "status": "SUCCESS",
+      "foods": [
+        { "name": "Arroz branco", "quantity": "150g", "calories": 195, "proteins": 4, "carbohydrates": 42, "fats": 0.5, "source": "INITIAL" },
+        { "name": "Coca-Cola", "quantity": "350ml", "calories": 140, "proteins": 0, "carbohydrates": 35, "fats": 0, "source": "ADDED" }
+      ],
+      "canAddItems": true,
+      "...": "demais campos iguais ao GET /meals/{id}"
+    },
+    "addedFoods": [
+      { "name": "Coca-Cola", "quantity": "350ml", "calories": 140, "proteins": 0, "carbohydrates": 35, "fats": 0, "source": "ADDED" }
+    ],
+    "skippedFoodsCount": 0
+  }
+  ```
+
+- Erros:
+
+  | Status | Código | Quando |
+  |---|---|---|
+  | `404` | `RESOURCE_NOT_FOUND` | Refeição não existe ou é de outra conta |
+  | `409` | `MEAL_NOT_EDITABLE` | Refeição não está `SUCCESS` ou passou da janela de 24h |
+  | `409` | `MEAL_ITEM_LIMIT_REACHED` | 5 adições já feitas ou 30 itens na refeição |
+  | `422` | `NO_FOOD_IDENTIFIED` | A IA não encontrou nenhum alimento no texto |
+  | `403` | `FREE_QUOTA_EXCEEDED` | Usuário Free sem cota restante no mês |
+  | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 20 chamadas na hora |
 
 #### Get Plans -> `/billing/plans`
 
@@ -1076,7 +1131,7 @@ src/
 │   ├── utils/                 # Body parser, response builders
 │   └── functions/             # Handlers organizados por domínio
 │       ├── auth/              # signUp, signIn, refreshToken, forgotPassword, triggers
-│       ├── meal/              # createMeal, listMeals, getMealById, processMeal, uploadTrigger
+│       ├── meal/              # createMeal, listMeals, getMealById, addMealItems, processMeal, uploadTrigger
 │       ├── account/           # me
 │       ├── profile/           # updateProfile
 │       └── billing/           # plans, trial, checkout, cancel, webhookAsaas
@@ -1088,6 +1143,7 @@ src/
 │   │                          # MealNamingService, MealFileValidationService
 │   ├── useCases/              # Use cases organizados por domínio
 │   ├── controllers/           # Controllers com schemas Zod
+│   ├── presenters/            # MealPresenter (formato de saída da refeição)
 │   ├── query/                 # Queries diretas ao DynamoDB
 │   ├── events/                # MealUploadedEventHandler
 │   ├── queues/                # MealQueueConsumer

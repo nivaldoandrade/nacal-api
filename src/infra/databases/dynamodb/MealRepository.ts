@@ -1,6 +1,6 @@
 import { Meal } from '@application/entities/Meal';
 import { ConditionalCheckFailedException, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
-import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand, UpdateCommandOutput } from '@aws-sdk/lib-dynamodb';
 import { dynamodbClient } from '@infra/clients/dynamodbClient';
 import { MealItem } from '@infra/databases/dynamodb/items/MealItem';
 import { RateLimitRepository } from '@infra/databases/dynamodb/RateLimitRepository';
@@ -87,21 +87,13 @@ export class MealRepository {
       ReturnValues: 'ALL_NEW',
     });
 
-    try {
-      const { Attributes } = await dynamodbClient.send(command);
+    const output = await this.sendConditionalUpdate(command);
 
-      if (!Attributes) {
-        return null;
-      }
-
-      return MealItem.toEntity(Attributes as MealItem.ItemType);
-    } catch (error) {
-      if (error instanceof ConditionalCheckFailedException) {
-        return null;
-      }
-
-      throw error;
+    if (!output?.Attributes) {
+      return null;
     }
+
+    return MealItem.toEntity(output.Attributes as MealItem.ItemType);
   }
 
   async markSuccess({
@@ -144,6 +136,58 @@ export class MealRepository {
     });
 
     return this.sendConditional(command);
+  }
+
+  async appendFoods({
+    meal,
+    foods,
+    now,
+  }: MealRepository.AppendFoodsParams): Promise<Meal | null> {
+    const command = new UpdateCommand({
+      TableName: this.config.db.dynamodb.mainTable,
+      Key: MealRepository.getKey({
+        accountId: meal.accountId,
+        mealId: meal.id,
+      }),
+      UpdateExpression: [
+        'SET #foods = list_append(if_not_exists(#foods, :empty), :newFoods),',
+        '#itemAdditions = if_not_exists(#itemAdditions, :zero) + :one,',
+        '#editedAt = :now',
+      ].join(' '),
+      ConditionExpression: [
+        '#status = :success',
+        '(attribute_not_exists(#itemAdditions) OR #itemAdditions < :maxAdditions)',
+        '(attribute_not_exists(#foods) OR size(#foods) <= :maxFoodsBefore)',
+        '#createdAt >= :windowStart',
+      ].join(' AND '),
+      ExpressionAttributeNames: {
+        '#status': 'status',
+        '#createdAt': 'createdAt',
+        '#foods': 'foods',
+        '#itemAdditions': 'itemAdditions',
+        '#editedAt': 'editedAt',
+      },
+      ExpressionAttributeValues: {
+        ':success': Meal.StatusType.SUCCESS,
+        ':newFoods': foods,
+        ':empty': [],
+        ':zero': 0,
+        ':one': 1,
+        ':now': now.toISOString(),
+        ':maxAdditions': Meal.MAX_ITEM_ADDITIONS,
+        ':maxFoodsBefore': Meal.MAX_FOODS - foods.length,
+        ':windowStart': new Date(now.getTime() - (Meal.EDIT_WINDOW_HOURS * 60 * 60 * 1000)).toISOString(),
+      },
+      ReturnValues: 'ALL_NEW',
+    });
+
+    const output = await this.sendConditionalUpdate(command);
+
+    if (!output?.Attributes) {
+      return null;
+    }
+
+    return MealItem.toEntity(output.Attributes as MealItem.ItemType);
   }
 
   async failAndRefund({ meal }: MealRepository.FailAndRefundParams): Promise<MealRepository.FailAndRefundResult> {
@@ -510,12 +554,15 @@ export class MealRepository {
   }
 
   private async sendConditional(command: UpdateCommand): Promise<boolean> {
+    return (await this.sendConditionalUpdate(command)) !== null;
+  }
+
+  private async sendConditionalUpdate(command: UpdateCommand): Promise<UpdateCommandOutput | null> {
     try {
-      await dynamodbClient.send(command);
-      return true;
+      return await dynamodbClient.send(command);
     } catch (error) {
       if (error instanceof ConditionalCheckFailedException) {
-        return false;
+        return null;
       }
 
       throw error;
@@ -583,6 +630,12 @@ namespace MealRepository {
   export type ClaimForProcessingParams = FindByIdParams & {
     leaseExpiresAt: number;
     now: number;
+  }
+
+  export type AppendFoodsParams = {
+    meal: Meal;
+    foods: Meal.FoodType[];
+    now: Date;
   }
 
   export type MarkSuccessParams = {
