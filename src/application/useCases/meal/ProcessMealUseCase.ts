@@ -84,6 +84,7 @@ export class ProcessMealUseCase {
       const {
         mealType,
         foods,
+        unidentified,
       } = await this.mealAiGateway.processMeal(claimedMeal);
 
       if (foods.length === 0) {
@@ -106,6 +107,7 @@ export class ProcessMealUseCase {
         calories: Meal.computeCalories(food),
         source: Meal.FoodSource.INITIAL,
       }));
+      claimedMeal.unidentified = unidentified;
 
       const markedAsSuccess = await this.mealRepository.markSuccess({
         meal: claimedMeal,

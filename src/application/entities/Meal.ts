@@ -47,6 +47,8 @@ export class Meal {
 
   itemAdditions: number;
 
+  unidentified: Meal.UnidentifiedKind | null;
+
   readonly createdAt: Date;
 
   rejectedAt: Date | null;
@@ -71,6 +73,7 @@ export class Meal {
     this.quotaRefunded = attr.quotaRefunded ?? false;
     this.leaseExpiresAt = attr.leaseExpiresAt ?? null;
     this.itemAdditions = attr.itemAdditions ?? 0;
+    this.unidentified = attr.unidentified ?? null;
     this.createdAt = attr.createdAt ?? new Date();
     this.rejectedAt = attr.rejectedAt ?? null;
     this.editedAt = attr.editedAt ?? null;
@@ -95,6 +98,15 @@ export class Meal {
     return this.isEditable(now) && !this.hasReachedItemLimit();
   }
 
+  getAddItemsState(now: Date = new Date()): Meal.AddItemsState {
+    const canAddItems = this.canAddItems(now);
+
+    return {
+      canAddItems,
+      unidentified: canAddItems && this.itemAdditions === 0 ? this.unidentified : null,
+    };
+  }
+
 }
 
 export namespace Meal {
@@ -116,6 +128,7 @@ export namespace Meal {
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
     itemAdditions?: number;
+    unidentified?: Meal.UnidentifiedKind | null;
     createdAt?: Date;
     rejectedAt?: Date | null;
     editedAt?: Date | null;
@@ -192,6 +205,22 @@ export namespace Meal {
   } as const;
 
   export type FoodSource = ValueOf<typeof FoodSource>;
+
+  export const UnidentifiedKind = {
+    DRINK: 'DRINK',
+    PACKAGED: 'PACKAGED',
+    COVERED: 'COVERED',
+    OTHER: 'OTHER',
+  } as const;
+
+  export type UnidentifiedKind = ValueOf<typeof UnidentifiedKind>;
+
+  export type AddItemsState = {
+    canAddItems: boolean;
+    unidentified: UnidentifiedKind | null;
+  };
+
+  export const unidentifiedKinds = Object.values(UnidentifiedKind) as [UnidentifiedKind, ...UnidentifiedKind[]];
 
   export type FoodType = {
     name: string;

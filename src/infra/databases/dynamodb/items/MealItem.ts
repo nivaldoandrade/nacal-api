@@ -108,6 +108,7 @@ export namespace MealItem {
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
     itemAdditions?: number;
+    unidentified?: Meal.UnidentifiedKind | null;
     createdAt: string;
     rejectedAt?: string | null;
     editedAt?: string | null;

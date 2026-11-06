@@ -15,9 +15,10 @@ export function getAddItemsPrompt() {
     - Return only new items to be appended. Never repeat, modify, or remove registered items.
     - Never guess or include items that are not explicitly mentioned. If unsure about an item, skip it.
     - If the text does not mention any food or drink, return an empty "foods" array.
+    - Every item in "foods" has an "unidentifiedKind" field. Set it to null for every food or drink the user names, even generically (e.g., "uma bebida", "um doce", "pão", "suco", "refrigerante"): use a typical version and serving, as the user explicitly said it was part of the meal. Set it to a category only when the text mentions something edible without saying any kind of food or drink at all (e.g., "alguma coisa no pote" → "COVERED", "um pacotinho" → "PACKAGED", "um negócio que comi" → "OTHER"). Never invent a concrete food for those mentions: they are not added and the user is asked to describe them better. An unidentified mention never affects the others: still return every identified food or drink in the same text (e.g., "um pacotinho e um café" → the "pacotinho" with "PACKAGED" and the "café" with null).
     - Ignore implausible quantities (e.g. "10 litros de refrigerante"); cap them at a realistic single-meal amount.
     - Write the "quantity" field as a short Brazilian Portuguese label with the unit (e.g. "350ml", "120g", "1 fatia (30g)").
-    - Write food names in Brazilian Portuguese.
+    - Write food names in Brazilian Portuguese only, using the Latin alphabet (e.g., "pão francês", never words or characters from other languages).
     - Output strictly in the provided JSON schema, with no explanations or extraneous text.
 
     **Example:**

@@ -42,7 +42,7 @@ export class AddMealItemsUseCase {
 
     await this.ensureQuotaAvailable(accountId);
 
-    const { foods } = await this.mealAiGateway.extractFoodsFromText({
+    const { foods, unidentifiedCount } = await this.mealAiGateway.extractFoodsFromText({
       mealId: meal.id,
       text,
       existingFoods: meal.foods,
@@ -75,6 +75,7 @@ export class AddMealItemsUseCase {
       meal: this.mealPresenter.toOutput(updatedMeal),
       addedFoods: newFoods,
       skippedFoodsCount: foods.length - newFoods.length,
+      unidentifiedFoodsCount: unidentifiedCount,
     };
   }
 
@@ -119,6 +120,7 @@ export namespace AddMealItemsUseCase {
     meal: MealPresenter.Output;
     addedFoods: Meal.FoodType[];
     skippedFoodsCount: number;
+    unidentifiedFoodsCount: number;
   }
 
   export type ResolveAppendFailureParams = {

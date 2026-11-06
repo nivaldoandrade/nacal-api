@@ -19,7 +19,7 @@ export class AddMealItemsController extends Controller<'private'> {
   protected async handler(
     request: AddMealItemsController.Request,
   ): Promise<Controller.Response<AddMealItemsController.Response>> {
-    const { meal, addedFoods, skippedFoodsCount } = await this.addMealItemsUseCase.execute({
+    const { meal, addedFoods, skippedFoodsCount, unidentifiedFoodsCount } = await this.addMealItemsUseCase.execute({
       accountId: request.accountId,
       mealId: request.params.id,
       text: request.body.text,
@@ -31,6 +31,7 @@ export class AddMealItemsController extends Controller<'private'> {
         meal,
         addedFoods,
         skippedFoodsCount,
+        unidentifiedFoodsCount,
       },
     };
   }
@@ -43,5 +44,6 @@ export namespace AddMealItemsController {
     meal: GetMealByIdController.Response;
     addedFoods: Meal.FoodType[];
     skippedFoodsCount: number;
+    unidentifiedFoodsCount: number;
   }
 }

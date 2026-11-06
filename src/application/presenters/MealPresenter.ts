@@ -8,6 +8,7 @@ export class MealPresenter {
   constructor(private readonly mealFileStorageGateway: MealFileStorageGateway) { }
 
   toOutput(meal: Meal): MealPresenter.Output {
+    const { canAddItems, unidentified } = meal.getAddItemsState();
     const inputFileUrl = meal.status === Meal.StatusType.REJECTED || meal.status === Meal.StatusType.FAILED
       ? null
       : this.mealFileStorageGateway.getFileURL(meal.inputFileKey);
@@ -21,7 +22,8 @@ export class MealPresenter {
       foods: meal.foods,
       inputFileType: meal.inputType,
       inputFileUrl: inputFileUrl,
-      canAddItems: meal.canAddItems(),
+      canAddItems,
+      unidentified,
       createdAt: meal.createdAt,
     };
   }
@@ -38,6 +40,7 @@ export namespace MealPresenter {
     icon: string;
     foods: Meal.FoodType[];
     canAddItems: boolean;
+    unidentified: Meal.UnidentifiedKind | null;
     createdAt: Date;
   }
 }

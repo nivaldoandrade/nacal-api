@@ -106,6 +106,7 @@ export class MealRepository {
       ':name': meal.name,
       ':icon': meal.icon,
       ':foods': meal.foods,
+      ':unidentified': meal.unidentified,
     };
     const expressionAttributeNames: Record<string, string> = {
       '#status': 'status',
@@ -113,14 +114,23 @@ export class MealRepository {
       '#name': 'name',
       '#icon': 'icon',
       '#foods': 'foods',
+      '#unidentified': 'unidentified',
     };
-    let updateExpression = 'SET #status = :success, #name = :name, #icon = :icon, #foods = :foods REMOVE #leaseExpiresAt';
+    const setClauses = [
+      '#status = :success',
+      '#name = :name',
+      '#icon = :icon',
+      '#foods = :foods',
+      '#unidentified = :unidentified',
+    ];
 
     if (gateScore !== undefined && gateScore !== null) {
       expressionAttributeNames['#gateScore'] = 'gateScore';
       expressionAttributeValues[':gateScore'] = gateScore;
-      updateExpression = 'SET #status = :success, #name = :name, #icon = :icon, #foods = :foods, #gateScore = :gateScore REMOVE #leaseExpiresAt';
+      setClauses.push('#gateScore = :gateScore');
     }
+
+    const updateExpression = `SET ${setClauses.join(', ')} REMOVE #leaseExpiresAt`;
 
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.mainTable,

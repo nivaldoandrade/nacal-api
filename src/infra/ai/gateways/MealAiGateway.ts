@@ -21,13 +21,25 @@ const foodSchema = z.object({
   proteins: z.number(),
 });
 
+const unidentifiedKindSchema = z.enum(Meal.unidentifiedKinds).nullable();
+
 const schema = z.object({
   mealType: z.enum(MealNamingService.MEAL_TYPES).nullable(),
   foods: z.array(foodSchema),
 });
 
+const taggedFoodSchema = foodSchema.extend({
+  unidentifiedKind: unidentifiedKindSchema,
+});
+
+const imageSchema = z.object({
+  unidentified: unidentifiedKindSchema,
+  mealType: schema.shape.mealType,
+  foods: z.array(taggedFoodSchema),
+});
+
 const addItemsSchema = z.object({
-  foods: z.array(foodSchema),
+  foods: z.array(taggedFoodSchema),
 });
 
 @Injectable()
@@ -83,9 +95,18 @@ export class MealAiGateway {
       },
     ];
 
-    const processedMeal = await this.callOpenAI(meal.id, input, schema);
+    const { unidentified, mealType, foods: taggedFoods } = await this.callOpenAI(meal.id, input, imageSchema);
+    const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(taggedFoods);
 
-    return processedMeal;
+    if (unidentifiedFoods.length > 0) {
+      console.log(`[UNIDENTIFIED] meal ${meal.id}: removed foods ${JSON.stringify(unidentifiedFoods)}`);
+    }
+
+    return {
+      mealType,
+      foods,
+      unidentified: unidentified ?? unidentifiedFoods[0]?.kind ?? null,
+    };
   }
 
   async extractFoodsFromText({
@@ -117,9 +138,17 @@ export class MealAiGateway {
     ];
 
     try {
-      const { foods } = await this.callOpenAI(mealId, input, addItemsSchema);
+      const result = await this.callOpenAI(mealId, input, addItemsSchema);
+      const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(result.foods);
 
-      return { foods };
+      if (unidentifiedFoods.length > 0) {
+        console.log(`[UNIDENTIFIED] meal ${mealId}: removed added foods ${JSON.stringify(unidentifiedFoods)}`);
+      }
+
+      return {
+        foods,
+        unidentifiedCount: unidentifiedFoods.length,
+      };
     } catch (error) {
       throw new Error(`[OPEN AI] ${error}`, { cause: error });
     }
@@ -146,7 +175,10 @@ export class MealAiGateway {
 
     const processedMeal = await this.callOpenAI(meal.id, input, schema);
 
-    return processedMeal;
+    return {
+      ...processedMeal,
+      unidentified: null,
+    };
   }
 
   private async transcribe(meal: Meal): Promise<string> {
@@ -172,6 +204,21 @@ export class MealAiGateway {
 
     return text;
 
+  }
+
+  private static splitUnidentifiedFoods(taggedFoods: MealAiGateway.TaggedFood[]): MealAiGateway.SplitFoods {
+    const foods: MealAiGateway.Food[] = [];
+    const unidentifiedFoods: MealAiGateway.SplitFoods['unidentifiedFoods'] = [];
+
+    for (const { unidentifiedKind, ...food } of taggedFoods) {
+      if (unidentifiedKind) {
+        unidentifiedFoods.push({ name: food.name, kind: unidentifiedKind });
+      } else {
+        foods.push(food);
+      }
+    }
+
+    return { foods, unidentifiedFoods };
   }
 
   private static sanitize(value: string): string {
@@ -230,8 +277,19 @@ export class MealAiGateway {
 }
 
 export namespace MealAiGateway {
+  export type Food = z.infer<typeof foodSchema>;
+
+  export type TaggedFood = z.infer<typeof taggedFoodSchema>;
+
+  export type SplitFoods = {
+    foods: Food[];
+    unidentifiedFoods: { name: string; kind: Meal.UnidentifiedKind }[];
+  }
+
   export type ProcessMeal = {
-    result: z.infer<typeof schema>;
+    result: z.infer<typeof schema> & {
+      unidentified: Meal.UnidentifiedKind | null;
+    };
   }
 
   export type ExtractFoodsFromText = {
@@ -240,6 +298,9 @@ export namespace MealAiGateway {
       text: string;
       existingFoods: Meal.FoodType[];
     };
-    result: z.infer<typeof addItemsSchema>;
+    result: {
+      foods: Food[];
+      unidentifiedCount: number;
+    };
   }
 }

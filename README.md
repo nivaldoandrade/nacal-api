@@ -16,6 +16,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Análise por IA**: Identificação automática de alimentos com quantidades e macronutrientes via IA;
 - **Descrição opcional na foto**: Texto livre (até 300 caracteres) enviado junto com a foto para completar o que a imagem não mostra (bebida em copo opaco, ingrediente escondido, quantidade, qual refeição foi);
 - **Adicionar item por texto**: Depois do processamento, o usuário pode completar uma refeição `SUCCESS` com um texto curto ("um copo de coca 350ml"); a IA devolve só os itens novos, que são anexados à refeição. Não consome cota, mas é bloqueado para Free sem cota restante; até 5 adições por refeição, só nas primeiras 24h e até 30 itens;
+- **Aviso do que não foi identificado**: Na análise por foto, a IA pode sinalizar (`unidentified`: `DRINK`, `PACKAGED`, `COVERED` ou `OTHER`) algo claramente presente cujo conteúdo não dá para ver (copo opaco, embalagem fechada, recipiente tampado), sem adivinhar o item; o app usa isso para levar ao "Adicionar item". Cada alimento devolvido pela IA também traz `unidentifiedKind`: itens que a própria IA marca como não identificados ("bebida não identificada", "alguma coisa no pote") são removidos no backend; na foto viram esse aviso e, no "Adicionar item", são contados em `unidentifiedFoodsCount`;
 - **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio ou na descrição da foto sobrepondo o horário;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
@@ -92,7 +93,7 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 9. Para **fotos**, o gate Clef-flash avalia se há comida/bebida. Score abaixo de `0.30` vira `REJECTED` (`NOT_A_MEAL`), com estorno de cota; falha, timeout ou resposta inválida do gate não bloqueiam o processamento (fail-open);
 10. Para **fotos**, a imagem vai para o GPT-5.4-mini junto com a `description`, quando enviada, delimitada em `<user_note>` (com `<`/`>` neutralizados). A nota acrescenta itens não visíveis e corrige identidade/quantidade dos visíveis, dentro do plausível para a imagem; ela é tratada como dado, nunca como instrução, e não monta a refeição sozinha se a foto não mostra comida;
 11. Para **áudios**, transcreve via GPT-4o-mini-transcribe, depois envia o texto para o GPT-5.4-mini. Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
-12. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e um `mealType` opcional quando o usuário declara a refeição (no áudio ou na descrição da foto);
+12. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e um `mealType` opcional quando o usuário declara a refeição (no áudio ou na descrição da foto). Para **fotos**, também devolve `unidentified` (`DRINK`, `PACKAGED`, `COVERED`, `OTHER` ou `null`) quando há algo claramente presente cujo conteúdo não dá para ver e a nota não explica, e marca cada alimento com `unidentifiedKind` (`null` quando identificado). O `MealAiGateway` remove os alimentos marcados (log `[UNIDENTIFIED]`) e, se `unidentified` veio `null`, usa a categoria do primeiro alimento removido; se nenhum alimento sobrar, a refeição vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
 13. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
 14. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
 
@@ -462,7 +463,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 | ------ | ------------------------ | ------------------------------------------------------ | ------------ |
 | POST   | `/create-meal`           | Cria uma refeição (JPEG ≤10 MB ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
-| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos e `canAddItems` | JWT          |
+| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos, `canAddItems` e `unidentified` | JWT          |
 | POST   | `/meals/{id}/items`      | Adiciona itens a uma refeição `SUCCESS` a partir de texto (IA síncrona) | JWT          |
 
 ### Billing
@@ -820,12 +821,14 @@ com header `Retry-After` em segundos.
     "icon": "",
     "foods": [],
     "canAddItems": false,
+    "unidentified": null,
     "createdAt": "2026-10-22T15:00:00.000Z"
   }
   ```
 
 - Em `REJECTED`, `inputFileUrl` é `null` porque o arquivo é removido do S3; `rejectionReason` indica o motivo (`INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`).
 - `canAddItems` indica se a refeição ainda aceita `POST /meals/{id}/items` (status `SUCCESS`, dentro das 24h e abaixo dos limites); não considera a cota do plano Free.
+- `unidentified` traz a categoria do que a IA viu e não conseguiu identificar na foto (`DRINK`, `PACKAGED`, `COVERED`, `OTHER`) ou `null`. Só vem preenchido enquanto `canAddItems` é `true` e nenhuma adição foi feita; depois disso volta `null` (o valor original continua salvo na refeição). Refeições por áudio e refeições antigas sempre trazem `null`.
 - Cada alimento pode trazer `source`: `INITIAL` (identificado no processamento) ou `ADDED` (adicionado por texto). Refeições antigas não têm o campo.
 
 #### Add Meal Items -> `/meals/{id}/items`
@@ -856,14 +859,19 @@ com header `Retry-After` em segundos.
         { "name": "Coca-Cola", "quantity": "350ml", "calories": 140, "proteins": 0, "carbohydrates": 35, "fats": 0, "source": "ADDED" }
       ],
       "canAddItems": true,
+      "unidentified": null,
       "...": "demais campos iguais ao GET /meals/{id}"
     },
     "addedFoods": [
       { "name": "Coca-Cola", "quantity": "350ml", "calories": 140, "proteins": 0, "carbohydrates": 35, "fats": 0, "source": "ADDED" }
     ],
-    "skippedFoodsCount": 0
+    "skippedFoodsCount": 0,
+    "unidentifiedFoodsCount": 0
   }
   ```
+
+- `skippedFoodsCount`: itens identificados que ficaram de fora porque a refeição chegou ao limite de 30 itens.
+- `unidentifiedFoodsCount`: menções que não dizem qual alimento era ("alguma coisa no pote", "um pacotinho") e foram descartadas. Nomes genéricos de comida ou bebida ("uma bebida", "um suco", "pão") entram com uma versão típica.
 
 - Erros:
 
@@ -872,7 +880,7 @@ com header `Retry-After` em segundos.
   | `404` | `RESOURCE_NOT_FOUND` | Refeição não existe ou é de outra conta |
   | `409` | `MEAL_NOT_EDITABLE` | Refeição não está `SUCCESS` ou passou da janela de 24h |
   | `409` | `MEAL_ITEM_LIMIT_REACHED` | 5 adições já feitas ou 30 itens na refeição |
-  | `422` | `NO_FOOD_IDENTIFIED` | A IA não encontrou nenhum alimento no texto |
+  | `422` | `NO_FOOD_IDENTIFIED` | A IA não encontrou nenhum alimento no texto, ou só encontrou menções que não dizem o que era ("alguma coisa no pote", "um pacotinho"), que são descartadas |
   | `403` | `FREE_QUOTA_EXCEEDED` | Usuário Free sem cota restante no mês |
   | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 20 chamadas na hora |
 

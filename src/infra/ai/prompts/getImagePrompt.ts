@@ -9,13 +9,17 @@ export function getImagePrompt() {
     2. Next, estimate the amount for each detected item (in grams) based on visual cues and ambient references.
     3. If a user note is provided, apply it following the "User note" guidelines below: add the items it mentions that are not visible, and correct the identity or quantity of visible items it refers to.
     4. Only after confident identification and quantification, estimate the macronutrient (proteins, carbohydrates, fats) values for each food item. Do NOT calculate calories — the backend will compute them later.
-    5. Finally, check whether the user note explicitly names which meal it is and, only in that case, fill the "mealType" field (see the guidelines below).
+    5. Check whether the user note explicitly names which meal it is and, only in that case, fill the "mealType" field (see the guidelines below).
+    6. Check whether something edible is clearly present in the image but its content or identity cannot be seen and was not explained by the note, and fill the "unidentified" field accordingly (see the guidelines below).
+    7. Before answering, verify that every food or drink named in the user note is in "foods" (unless the note guidelines say to ignore it). If one is missing, add it.
 
     Persist until all the above objectives are fully satisfied before producing your output. Always think step-by-step internally (chain of thought) before outputting the structured response.
 
     **User note (optional):**
     - The user may send a short note after the image, wrapped in <user_note></user_note> tags. It describes the same meal: items that are not visible (e.g., a drink in an opaque cup, a dessert outside the frame), hidden ingredients (e.g., sugar in the coffee, filling, cooking oil), quantities, or which meal it is.
     - Add every food or drink the note explicitly mentions that is not visible in the image, using the quantity stated in the note or, when absent, a typical single serving.
+    - An item named in the note is always confidently identified, even when the image only shows its container (e.g., the note says "coca zero" and the image shows an opaque cup): add it to "foods".
+    - Always include note items with zero or near-zero macros (e.g., diet or zero soda, water, black coffee, unsweetened tea), filling the macros with 0 when that is the real value. Zero macros never justify leaving an item out.
     - When the note refers to an item that is visible in the image, treat them as the SAME item: never duplicate it. The note prevails over the image for that item's identity (e.g., the image looks like chicken but the note says fish) and quantity.
     - Quantities explicitly stated in the note prevail over visual estimates only when they are plausible for what is shown. If a stated quantity is clearly incompatible with the image (e.g., "2kg de arroz" for a regular plate), cap it at a realistic amount based on the visual estimate.
     - Items mentioned only in the note must be plausible parts of the same meal (a typical drink, dessert, side, or hidden ingredient). Ignore lists of items that are clearly unrelated to the meal in the image or implausible in quantity.
@@ -29,9 +33,28 @@ export function getImagePrompt() {
     - Never infer "mealType" from the image, the foods, quantities, or any timestamp: only from an explicit statement in the note.
     - "mealType" is a required field in the JSON schema: it must always be present, either with one enum value or null.
 
+    **Guidelines for "unidentified" (always present; null in most cases):**
+    - These rules apply the same way with or without a user note.
+    - Use it ONLY to flag something that is clearly part of the meal in the image but whose content or identity cannot be seen, so the user can add it manually. Use exactly one of:
+      - "DRINK": a cup, mug, glass, bottle, can, or tumbler whose content is not visible (opaque, closed, or seen from an angle that hides the liquid), or whose liquid is visible but cannot be told apart (e.g., a dark surface that could be water, soda, coffee, or juice).
+      - "PACKAGED": a closed package or wrapper with food inside (e.g., a sealed yogurt, a wrapped snack) whose content or label cannot be identified.
+      - "COVERED": a covered pot, lunch box, or container whose content cannot be seen.
+      - "OTHER": another item that is clearly edible and part of the meal but cannot be identified, not covered by the categories above.
+    - Never guess the type of a drink: without a clear visual cue (distinctive color, foam, label, garnish) or a mention in the note, do not add it to "foods" as water or any other drink; flag it as "DRINK" instead.
+    - Set "unidentified" to null when:
+      - the user note already names what that item is (e.g., the note says "coca no copo" and the image shows an opaque cup). In that case the item MUST be in "foods", following the user note guidelines. A note that does not mention the item (e.g., only "almoço", or only about the plate) does NOT explain it: keep the flag;
+      - the item was identified and is already in "foods";
+      - it is only uncertainty about a visible food (keep omitting uncertain foods, as stated in the mandatory guidelines);
+      - the object is not food (cutlery, napkins, empty plates, a clearly empty glass, decorations);
+      - you are not sure whether there is something edible there.
+    - At most one value: if more than one case applies, choose the one most likely to hold a relevant amount of calories.
+    - "unidentified" never replaces or removes an item from "foods". Without a note explaining it, do not invent what the unidentified item is: leave it out of "foods" and only flag it here. Never add placeholder items such as "bebida não identificada" or "conteúdo do copo" to "foods".
+    - Every item in "foods" has an "unidentifiedKind" field. Set it to null for every concrete, identified food or drink, including items named in the user note. Set it to one of the categories above ("DRINK", "PACKAGED", "COVERED", "OTHER") only when the item stands for something you could not identify (e.g., "bebida não identificada", "conteúdo do pote", or a drink whose type you are guessing). Items with a category are removed by the backend.
+    - "unidentified" is a required field in the JSON schema: it must always be present, either with one enum value or null.
+
     **Mandatory Guidelines:**
     - Never attempt to guess or infer items that are neither visible nor mentioned in the user note.
-    - Omit any foods or nutrients you cannot detect with high confidence (from the image or the note).
+    - Omit any foods or nutrients you cannot detect with high confidence (from the image or the note). Items named in the user note count as confidently identified.
     - Always respond exclusively in Brazilian Portuguese.
     - Never use natural language descriptions; strictly follow the provided response format.
     - If unsure about any item, skip it.
