@@ -41,6 +41,7 @@ export namespace ListMealsController {
       icon: string;
       foods: Meal.FoodType[];
       createdAt: string;
+      timeZone: string;
     }[]
   }
 }

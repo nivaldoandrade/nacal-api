@@ -796,11 +796,14 @@ com header `Retry-After` em segundos.
             "calories": 240
           }
         ],
-        "createdAt": "2026-08-26T15:00:00.000Z"
+        "createdAt": "2026-08-26T15:00:00.000Z",
+        "timeZone": "America/Sao_Paulo"
       }
     ]
   }
   ```
+
+- `timeZone` é o fuso em que a refeição foi registrada, já com o fallback `America/Sao_Paulo` aplicado (o mesmo usado para o dia e o nome). O app usa esse fuso para exibir a hora, então uma refeição registrada em viagem mantém a hora local de onde foi feita.
 
 #### Get Meal By ID -> `/meals/{id}`
 

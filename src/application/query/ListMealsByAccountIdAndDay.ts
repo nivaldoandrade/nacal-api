@@ -4,6 +4,7 @@ import { dynamodbClient } from '@infra/clients/dynamodbClient';
 import { MealItem } from '@infra/databases/dynamodb/items/MealItem';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { resolveTimeZone } from '@shared/utils/timeZone';
 
 @Injectable()
 export class ListMealsByAccountIdAndDay {
@@ -16,7 +17,7 @@ export class ListMealsByAccountIdAndDay {
       TableName: this.config.db.dynamodb.mainTable,
       IndexName: 'GSI1',
       Select: 'SPECIFIC_ATTRIBUTES',
-      ProjectionExpression: '#createdAt, #foods, #icon, #id, #name',
+      ProjectionExpression: '#createdAt, #foods, #icon, #id, #name, #timeZone',
       ScanIndexForward: false,
       KeyConditionExpression: '#GSI1PK = :GSI1PK',
       FilterExpression: '#status = :status',
@@ -28,6 +29,7 @@ export class ListMealsByAccountIdAndDay {
         '#id': 'id',
         '#name': 'name',
         '#status': 'status',
+        '#timeZone': 'timeZone',
       },
       ExpressionAttributeValues: {
         ':GSI1PK': MealItem.GSI1PK({
@@ -49,6 +51,7 @@ export class ListMealsByAccountIdAndDay {
         icon: item.icon,
         foods: item.foods,
         createdAt: item.createdAt,
+        timeZone: resolveTimeZone(item.timeZone),
       }),
     );
 
@@ -70,6 +73,7 @@ export namespace ListMealsByAccountIdAndDay {
     icon: string;
     foods: Meal.FoodType[];
     createdAt: string;
+    timeZone?: string;
   }
 
   export type Output = {
@@ -79,6 +83,7 @@ export namespace ListMealsByAccountIdAndDay {
       icon: string;
       foods: Meal.FoodType[];
       createdAt: string;
+      timeZone: string;
     }[]
   }
 }
