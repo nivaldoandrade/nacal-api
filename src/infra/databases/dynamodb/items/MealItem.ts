@@ -1,4 +1,5 @@
 import { Meal } from '@application/entities/Meal';
+import { getLocalDay } from '@shared/utils/timeZone';
 
 export class MealItem {
   static readonly TYPE: MealItem.Type = 'MEAL';
@@ -14,7 +15,7 @@ export class MealItem {
       SK: MealItem.getSK(attrs.id),
       GSI1PK: MealItem.GSI1PK({
         accountId: attrs.accountId,
-        createdAt: new Date(attrs.createdAt),
+        day: MealItem.getDay(new Date(attrs.createdAt), attrs.timeZone),
       }),
       GSI1SK: MealItem.GSI1SK(attrs.id),
     };
@@ -56,12 +57,12 @@ export class MealItem {
     return `MEAL#${mealId}`;
   }
 
-  static GSI1PK({ accountId, createdAt }: MealItem.GSI1PKParams): MealItem.Keys['GSI1PK'] {
-    const year = createdAt.getUTCFullYear();
-    const month = String(createdAt.getUTCMonth() + 1).padStart(2, '0');
-    const date = String(createdAt.getUTCDate()).padStart(2, '0');
+  static getDay(createdAt: Date, timeZone?: string | null): string {
+    return getLocalDay(createdAt, timeZone);
+  }
 
-    return `MEAL#${accountId}#${year}-${month}-${date}`;
+  static GSI1PK({ accountId, day }: MealItem.GSI1PKParams): MealItem.Keys['GSI1PK'] {
+    return `MEAL#${accountId}#${day}`;
   }
 
   static GSI1SK(mealId: string): MealItem.Keys['SK'] {
@@ -75,7 +76,7 @@ export namespace MealItem {
 
   export type GSI1PKParams = {
     accountId: string;
-    createdAt: Date;
+    day: string;
   }
 
   export type PKParams = {
@@ -86,7 +87,7 @@ export namespace MealItem {
   export type Keys = {
     PK: `ACCOUNT#${string}MEAL#${string}`;
     SK: `MEAL#${string}`;
-    GSI1PK: `MEAL#${string}#${string}-${string}-${string}`;
+    GSI1PK: `MEAL#${string}#${string}`;
     GSI1SK: `MEAL#${string}`;
   }
 

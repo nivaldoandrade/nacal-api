@@ -1,3 +1,4 @@
+import { resolveTimeZone } from '@shared/utils/timeZone';
 import { ValueOf } from '@shared/utils/ValueOf';
 
 export class MealNamingService {
@@ -25,22 +26,9 @@ export class MealNamingService {
     return entry?.mealType ?? MealNamingService.MealType.SUPPER;
   }
 
-  static isValidTimeZone(timeZone: string): boolean {
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private static getLocalHour(date: Date, timeZone?: string): number {
-    const safeTimeZone = timeZone && this.isValidTimeZone(timeZone)
-      ? timeZone
-      : MealNamingService.DEFAULT_TIME_ZONE;
-
     const hour = new Intl.DateTimeFormat('en-US', {
-      timeZone: safeTimeZone,
+      timeZone: resolveTimeZone(timeZone),
       hour: '2-digit',
       hourCycle: 'h23',
     }).format(date);
@@ -50,8 +38,6 @@ export class MealNamingService {
 }
 
 export namespace MealNamingService {
-  export const DEFAULT_TIME_ZONE = 'America/Sao_Paulo';
-
   export const MealType = {
     BREAKFAST: 'BREAKFAST',
     LUNCH: 'LUNCH',

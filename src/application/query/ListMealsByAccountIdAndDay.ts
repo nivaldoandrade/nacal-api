@@ -32,7 +32,7 @@ export class ListMealsByAccountIdAndDay {
       ExpressionAttributeValues: {
         ':GSI1PK': MealItem.GSI1PK({
           accountId,
-          createdAt: date,
+          day: date,
         }),
         ':status': Meal.StatusType.SUCCESS,
       },
@@ -61,7 +61,7 @@ export class ListMealsByAccountIdAndDay {
 export namespace ListMealsByAccountIdAndDay {
   export type Input = {
     accountId: string;
-    date: Date;
+    date: string;
   }
 
   export type ItemType = {
