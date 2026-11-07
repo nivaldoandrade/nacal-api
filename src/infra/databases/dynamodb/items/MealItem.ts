@@ -95,7 +95,7 @@ export namespace MealItem {
     id: string;
     accountId: string;
     status: Meal.StatusType;
-    inputFileKey: string;
+    inputFileKey?: string | null;
     inputType: Meal.InputType;
     timeZone?: string;
     description?: string | null;

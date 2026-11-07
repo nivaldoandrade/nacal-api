@@ -1,6 +1,5 @@
 import { Meal } from '@application/entities/Meal';
 import { Subscription } from '@application/entities/Subscription';
-import { FreeQuotaExceeded } from '@application/errors/application/FreeQuotaExceeded';
 import { MealItemLimitReached } from '@application/errors/application/MealItemLimitReached';
 import { MealNotEditable } from '@application/errors/application/MealNotEditable';
 import { NoFoodIdentified } from '@application/errors/application/NoFoodIdentified';
@@ -83,11 +82,7 @@ export class AddMealItemsUseCase {
     const subscription = await this.subscriptionRepository.findByAccountId(accountId);
     const plan = Subscription.resolveEffectivePlan(subscription);
 
-    const { remaining } = await this.mealQuotaService.getUsage({ accountId, plan });
-
-    if (remaining === 0) {
-      throw new FreeQuotaExceeded();
-    }
+    await this.mealQuotaService.ensureAvailable({ accountId, plan });
   }
 
   private async resolveAppendFailure({

@@ -14,7 +14,7 @@ const M4A_BRANDS = new Set(['M4A ', 'M4B ', 'M4P ', 'mp41', 'mp42', 'isom', 'iso
 @Injectable()
 export class MealFileValidationService {
   async validate({ meal, file }: MealFileValidationService.Input): Promise<MealFileValidationService.Result> {
-    const { mimeType } = Meal.getInputFileByKey(meal.inputFileKey);
+    const { mimeType } = Meal.getInputFileByKey(meal.requireInputFileKey());
 
     if (meal.inputType === Meal.InputType.PICTURE) {
       return this.validateImage({ mimeType, file });

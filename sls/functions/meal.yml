@@ -22,6 +22,16 @@ getMealById:
         method: get
         authorizer:
           name: CognitoAuthorizer
+createTextMeal:
+  handler: src/main/functions/meal/createTextMeal.handler
+  memorySize: 256
+  timeout: 29
+  events:
+    - httpApi:
+        path: /meals/text
+        method: post
+        authorizer:
+          name: CognitoAuthorizer
 addMealItems:
   handler: src/main/functions/meal/addMealItems.handler
   memorySize: 256

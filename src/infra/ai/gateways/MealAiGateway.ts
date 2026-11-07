@@ -8,6 +8,7 @@ import { MealRejectedError } from '@application/errors/MealRejectedError';
 import { MealNamingService } from '@application/services/MealNamingService';
 import { getAddItemsPrompt } from '@infra/ai/prompts/getAddItemsPrompt';
 import { getImagePrompt } from '@infra/ai/prompts/getImagePrompt';
+import { getTextMealPrompt } from '@infra/ai/prompts/getTextMealPrompt';
 import { getTextPrompt } from '@infra/ai/prompts/getTextPrompt';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { downloadByURL } from '@infra/utils/downloadByURL';
@@ -42,6 +43,11 @@ const addItemsSchema = z.object({
   foods: z.array(taggedFoodSchema),
 });
 
+const textMealSchema = z.object({
+  mealType: schema.shape.mealType,
+  foods: z.array(taggedFoodSchema),
+});
+
 @Injectable()
 export class MealAiGateway {
   private readonly client = new OpenAI();
@@ -72,7 +78,7 @@ export class MealAiGateway {
     const userContent: OpenAI.Responses.ResponseInputMessageContentList = [
       {
         type: 'input_image',
-        image_url: this.mealFileStorageGateway.getFileURL(meal.inputFileKey),
+        image_url: this.mealFileStorageGateway.getFileURL(meal.requireInputFileKey()),
         detail: 'high',
       },
     ];
@@ -154,6 +160,44 @@ export class MealAiGateway {
     }
   }
 
+  async extractMealFromText({
+    mealId,
+    text,
+  }: MealAiGateway.ExtractMealFromText['params']): Promise<MealAiGateway.ExtractMealFromText['result']> {
+    const input: OpenAI.Responses.ResponseInput = [
+      {
+        role: 'system',
+        content: getTextMealPrompt(),
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `<user_note>\n${MealAiGateway.sanitize(text)}\n</user_note>`,
+          },
+        ],
+      },
+    ];
+
+    try {
+      const { mealType, foods: taggedFoods } = await this.callOpenAI(mealId, input, textMealSchema);
+      const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(taggedFoods);
+
+      if (unidentifiedFoods.length > 0) {
+        console.log(`[UNIDENTIFIED] meal ${mealId}: removed text foods ${JSON.stringify(unidentifiedFoods)}`);
+      }
+
+      return {
+        mealType,
+        foods,
+        unidentifiedCount: unidentifiedFoods.length,
+      };
+    } catch (error) {
+      throw new Error(`[OPEN AI] ${error}`, { cause: error });
+    }
+  }
+
   private async processMealByAudio(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
     const audioTranscript = await this.transcribe(meal);
 
@@ -182,9 +226,10 @@ export class MealAiGateway {
   }
 
   private async transcribe(meal: Meal): Promise<string> {
-    const audioUrl = this.mealFileStorageGateway.getFileURL(meal.inputFileKey);
+    const inputFileKey = meal.requireInputFileKey();
+    const audioUrl = this.mealFileStorageGateway.getFileURL(inputFileKey);
     const audioBuffer = await downloadByURL(audioUrl);
-    const inputFile = Meal.getInputFileByKey(meal.inputFileKey);
+    const inputFile = Meal.getInputFileByKey(inputFileKey);
 
     const transcription = await this.client.audio.transcriptions.create({
       model: 'gpt-4o-mini-transcribe',
@@ -299,6 +344,18 @@ export namespace MealAiGateway {
       existingFoods: Meal.FoodType[];
     };
     result: {
+      foods: Food[];
+      unidentifiedCount: number;
+    };
+  }
+
+  export type ExtractMealFromText = {
+    params: {
+      mealId: string;
+      text: string;
+    };
+    result: {
+      mealType: z.infer<typeof schema>['mealType'];
       foods: Food[];
       unidentifiedCount: number;
     };

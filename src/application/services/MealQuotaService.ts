@@ -38,6 +38,14 @@ export class MealQuotaService {
     });
   }
 
+  async ensureAvailable({ accountId, plan }: MealQuotaService.Input): Promise<void> {
+    const { remaining } = await this.getUsage({ accountId, plan });
+
+    if (remaining === 0) {
+      throw new FreeQuotaExceeded();
+    }
+  }
+
   async getUsage({ accountId, plan }: MealQuotaService.Input): Promise<MealQuotaService.Result> {
     const used = await this.rateLimitRepository.getCountCalendarMonth({
       scope: 'account-monthly',

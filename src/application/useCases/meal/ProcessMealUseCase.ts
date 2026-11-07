@@ -51,7 +51,7 @@ export class ProcessMealUseCase {
     }
 
     try {
-      const inputFile = await this.mealStorageGateway.getObjectBytes(claimedMeal.inputFileKey);
+      const inputFile = await this.mealStorageGateway.getObjectBytes(claimedMeal.requireInputFileKey());
       const validation = await this.mealFileValidationService.validate({
         meal: claimedMeal,
         file: inputFile,
@@ -202,7 +202,11 @@ export class ProcessMealUseCase {
     }
   }
 
-  private async deleteInputFile(inputFileKey: string): Promise<void> {
+  private async deleteInputFile(inputFileKey: string | null): Promise<void> {
+    if (!inputFileKey) {
+      return;
+    }
+
     try {
       await this.mealStorageGateway.deleteObject(inputFileKey);
     } catch (error) {

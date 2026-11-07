@@ -1,6 +1,6 @@
 # NaCal API
 
-API serverless para um diário alimentar inteligente com inteligência artificial. O sistema permite que os usuários registrem suas refeições através de **fotos** ou **áudios**, que são analisados automaticamente por IA para identificar os alimentos, estimar quantidades e calcular macronutrientes (proteínas, carboidratos e gorduras). O sistema também calcula metas diárias personalizadas de calorias e macros com base no perfil do usuário.
+API serverless para um diário alimentar inteligente com inteligência artificial. O sistema permite que os usuários registrem suas refeições através de **fotos**, **áudios** ou **texto**, que são analisados automaticamente por IA para identificar os alimentos, estimar quantidades e calcular macronutrientes (proteínas, carboidratos e gorduras). O sistema também calcula metas diárias personalizadas de calorias e macros com base no perfil do usuário.
 
 ## Funcionalidades
 
@@ -15,9 +15,10 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Gate de foto**: Pré-filtro no Cloudflare Workers AI (Clef-flash) rejeita fotos que claramente não são comida/bebida antes da OpenAI; falhas do gate são fail-open;
 - **Análise por IA**: Identificação automática de alimentos com quantidades e macronutrientes via IA;
 - **Descrição opcional na foto**: Texto livre (até 300 caracteres) enviado junto com a foto para completar o que a imagem não mostra (bebida em copo opaco, ingrediente escondido, quantidade, qual refeição foi);
+- **Refeição por texto**: Uma frase digitada ("no almoço comi arroz, feijão e um bife", até 500 caracteres) vira uma refeição `SUCCESS` numa chamada síncrona (`POST /meals/text`), sem upload, fila ou polling. Consome 1 refeição da cota só quando dá certo;
 - **Adicionar item por texto**: Depois do processamento, o usuário pode completar uma refeição `SUCCESS` com um texto curto ("um copo de coca 350ml"); a IA devolve só os itens novos, que são anexados à refeição. Não consome cota, mas é bloqueado para Free sem cota restante; até 5 adições por refeição, só nas primeiras 24h e até 30 itens;
 - **Aviso do que não foi identificado**: Na análise por foto, a IA pode sinalizar (`unidentified`: `DRINK`, `PACKAGED`, `COVERED` ou `OTHER`) algo claramente presente cujo conteúdo não dá para ver (copo opaco, embalagem fechada, recipiente tampado), sem adivinhar o item; o app usa isso para levar ao "Adicionar item". Cada alimento devolvido pela IA também traz `unidentifiedKind`: itens que a própria IA marca como não identificados ("bebida não identificada", "alguma coisa no pote") são removidos no backend; na foto viram esse aviso e, no "Adicionar item", são contados em `unidentifiedFoodsCount`;
-- **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio ou na descrição da foto sobrepondo o horário;
+- **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio, no texto ou na descrição da foto sobrepondo o horário;
 - **Dia da refeição no fuso do usuário**: A refeição é agrupada no dia local de quando foi registrada (mesmo `timeZone`), então um jantar às 23h fica no mesmo dia do café da manhã, e não no dia seguinte em UTC;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
@@ -98,6 +99,13 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 13. Backend calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
 14. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
 
+### 3. Refeição por texto (síncrona)
+Não passa por S3, SQS nem `processMeal`: `POST /meals/text` resolve tudo na própria request (Lambda com `timeout: 29`).
+1. Checa a cota do plano Free (`403 FREE_QUOTA_EXCEEDED` antes de chamar a IA);
+2. Envia o texto ao GPT-5.4-mini (prompt `getTextMealPrompt`) dentro de `<user_note>`, com `<`/`>` neutralizados e tratado como dado. A IA devolve os alimentos e o `mealType` declarado; menções que não dizem qual alimento era ("alguma coisa no pote", "um pacotinho") vêm marcadas com `unidentifiedKind` e são removidas (log `[UNIDENTIFIED]`);
+3. Sem nenhum alimento, responde `422 NO_FOOD_IDENTIFIED` **sem consumir cota**;
+4. Consome a cota de forma atômica, calcula calorias, define `name`/`icon` e grava a refeição já em `SUCCESS` (`inputType: TEXT`, sem arquivo). Se a gravação falhar, a cota é estornada.
+
 ## Validação, gate e rejeição
 
 ### Validação do arquivo
@@ -158,7 +166,7 @@ App                                   API                                   Cogn
 
 ## Classificação da Refeição (nome e ícone)
 
-O nome e o ícone **não** são definidos pela IA: a API os deriva do **horário da refeição interpretado no fuso do usuário** (o `timeZone` IANA enviado no `POST /create-meal`, com fallback `America/Sao_Paulo`). Quando o usuário **declara explicitamente** a refeição no áudio ou na descrição da foto (por exemplo, "almocei", "estou jantando", "foi meu almoço"), a IA devolve um `mealType` opcional que **sobrepõe** o horário; menções genéricas ou negadas ficam como `null` e caem no horário.
+O nome e o ícone **não** são definidos pela IA: a API os deriva do **horário da refeição interpretado no fuso do usuário** (o `timeZone` IANA enviado no `POST /create-meal`, com fallback `America/Sao_Paulo`). Quando o usuário **declara explicitamente** a refeição no áudio, no texto ou na descrição da foto (por exemplo, "almocei", "estou jantando", "foi meu almoço"), a IA devolve um `mealType` opcional que **sobrepõe** o horário; menções genéricas ou negadas ficam como `null` e caem no horário.
 
 | Horário (local) | Nome            | Ícone | `mealType` da IA  |
 | --------------- | --------------- | ----- | ----------------- |
@@ -392,6 +400,7 @@ endpoints:
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/create-meal
   GET  - https://xxx.execute-api.sa-east-1.amazonaws.com/meals
   GET  - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}
+  POST - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/text
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}/items
 functions:
   hello: nacal-api-dev-hello
@@ -412,6 +421,8 @@ functions:
   createMeal: nacal-api-dev-createMeal
   listMeals: nacal-api-dev-listMeals
   getMealById: nacal-api-dev-getMealById
+  createTextMeal: nacal-api-dev-createTextMeal
+  addMealItems: nacal-api-dev-addMealItems
   newMealUploadedTrigger: nacal-api-dev-newMealUploadedTrigger
   processMeal: nacal-api-dev-processMeal
 ```
@@ -466,6 +477,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 | POST   | `/create-meal`           | Cria uma refeição (JPEG ≤10 MB ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
 | GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos, `canAddItems` e `unidentified` | JWT          |
+| POST   | `/meals/text`            | Cria uma refeição a partir de um texto (IA síncrona) e devolve a refeição pronta | JWT          |
 | POST   | `/meals/{id}/items`      | Adiciona itens a uma refeição `SUCCESS` a partir de texto (IA síncrona) | JWT          |
 
 ### Billing
@@ -498,11 +510,12 @@ Proteção contra abuso e excesso de requests, implementada **em código** (sem 
 | `POST /auth/oauth/callback` | IP | 30 / 15min |
 | `POST /auth/complete-onboarding` | IP | 30 / 15min |
 | `POST /create-meal` | conta | 10 / 1h |
+| `POST /meals/text` | conta | 10 / 1h |
 | `POST /meals/{id}/items` | conta | 20 / 1h |
 | `POST /billing/trial` | conta | 5 / 1h |
 | `POST /billing/webhooks/asaas` | IP | 120 / 60s |
 
-`POST /create-meal` conta cada tentativa, inclusive quando a refeição termina em `REJECTED`.
+`POST /create-meal` conta cada tentativa, inclusive quando a refeição termina em `REJECTED`. `POST /meals/text` também conta cada tentativa, inclusive as que terminam em `422 NO_FOOD_IDENTIFIED`, e tem contador próprio (não divide o limite com o `create-meal`).
 
 **Resposta `429`:**
 
@@ -831,10 +844,65 @@ com header `Retry-After` em segundos.
   }
   ```
 
+- Refeições por texto vêm com `inputFileType: "TEXT"` e `inputFileUrl: null` (não há arquivo).
 - Em `REJECTED`, `inputFileUrl` é `null` porque o arquivo é removido do S3; `rejectionReason` indica o motivo (`INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`).
 - `canAddItems` indica se a refeição ainda aceita `POST /meals/{id}/items` (status `SUCCESS`, dentro das 24h e abaixo dos limites); não considera a cota do plano Free.
-- `unidentified` traz a categoria do que a IA viu e não conseguiu identificar na foto (`DRINK`, `PACKAGED`, `COVERED`, `OTHER`) ou `null`. Só vem preenchido enquanto `canAddItems` é `true` e nenhuma adição foi feita; depois disso volta `null` (o valor original continua salvo na refeição). Refeições por áudio e refeições antigas sempre trazem `null`.
+- `unidentified` traz a categoria do que a IA viu e não conseguiu identificar na foto (`DRINK`, `PACKAGED`, `COVERED`, `OTHER`) ou `null`. Só vem preenchido enquanto `canAddItems` é `true` e nenhuma adição foi feita; depois disso volta `null` (o valor original continua salvo na refeição). Refeições por áudio, por texto e refeições antigas sempre trazem `null`.
 - Cada alimento pode trazer `source`: `INITIAL` (identificado no processamento) ou `ADDED` (adicionado por texto). Refeições antigas não têm o campo.
+
+#### Create Text Meal -> `/meals/text`
+
+- Cria uma refeição a partir de um texto e devolve a refeição já processada:
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/meals/text \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..." \
+    -H "Content-Type: application/json" \
+    -d '{
+      "text": "no almoço comi 2 colheres de arroz, feijão, um bife e uma coca zero lata",
+      "timeZone": "America/Sao_Paulo"
+    }'
+  ```
+
+- `text` é obrigatório: 1 a 500 caracteres após `trim`. Fica salvo na refeição (em `description`) e não aparece nas respostas de leitura.
+- `timeZone` segue a mesma regra do `create-meal` (nome, ícone e dia da refeição; fallback `America/Sao_Paulo`). A refeição entra no dia e na hora do envio; "no almoço comi…" só ajusta o nome e o ícone via `mealType`.
+- A chamada à OpenAI é **síncrona** (GPT-5.4-mini, prompt `getTextMealPrompt`, Lambda com `timeout: 29`, ~1–2s). O prompt reaproveita as regras do "Adicionar item" (nomes genéricos entram com versão típica, quantidade implausível é limitada, nomes só em português) e acrescenta: itens com macros zero (água, café preto, refrigerante zero) sempre entram, o que o usuário diz que **não** comeu fica de fora e "café" como bebida nunca vira café da manhã.
+- **Cota**: consome 1 refeição do mês, como foto e áudio, mas só quando dá certo. Ordem: checagem da cota (`403` antes da IA) → IA → `422` sem consumir → consumo atômico → gravação (estorno se a gravação falhar). Um timeout durante a IA não deixa cota consumida.
+- A refeição nasce `SUCCESS`, com `inputFileType: "TEXT"`, itens com `source: "INITIAL"` e `unidentified: null`; o `POST /meals/{id}/items` funciona nela como em qualquer refeição.
+
+- Resposta esperada (`201`):
+  ```json
+  {
+    "meal": {
+      "id": "2CkS0wZr5cY3xK1mN7jQ9bT2vL",
+      "status": "SUCCESS",
+      "rejectionReason": null,
+      "inputFileType": "TEXT",
+      "inputFileUrl": null,
+      "name": "Almoço",
+      "icon": "🍽️",
+      "foods": [
+        { "name": "arroz branco", "quantity": "2 colheres (100g)", "calories": 130, "proteins": 2.5, "carbohydrates": 28, "fats": 0.3, "source": "INITIAL" },
+        { "name": "Coca-Cola zero", "quantity": "350ml", "calories": 0, "proteins": 0, "carbohydrates": 0, "fats": 0, "source": "INITIAL" }
+      ],
+      "canAddItems": true,
+      "unidentified": null,
+      "createdAt": "2026-11-07T15:00:00.000Z"
+    },
+    "unidentifiedFoodsCount": 0
+  }
+  ```
+
+- `unidentifiedFoodsCount`: menções que não dizem qual alimento era ("alguma coisa no pote", "um pacotinho") e foram descartadas; o app sugere completar pelo "Adicionar item".
+
+- Erros:
+
+  | Status | Código | Quando |
+  |---|---|---|
+  | `400` | `VALIDATION` | `text` vazio ou acima de 500 caracteres |
+  | `403` | `FREE_QUOTA_EXCEEDED` | Usuário Free sem cota restante no mês (checado antes da IA) |
+  | `422` | `NO_FOOD_IDENTIFIED` | A IA não encontrou nenhum alimento no texto, ou só menções que não dizem o que era; a cota não é consumida |
+  | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 10 chamadas na hora |
 
 #### Add Meal Items -> `/meals/{id}/items`
 

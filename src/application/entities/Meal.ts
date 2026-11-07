@@ -19,7 +19,7 @@ export class Meal {
 
   status: Meal.StatusType;
 
-  readonly inputFileKey: string;
+  readonly inputFileKey: string | null;
 
   readonly inputType: Meal.InputType;
 
@@ -59,7 +59,7 @@ export class Meal {
     this.id = attr.id;
     this.accountId = attr.accountId;
     this.status = attr.status;
-    this.inputFileKey = attr.inputFileKey;
+    this.inputFileKey = attr.inputFileKey ?? null;
     this.inputType = attr.inputType;
     this.timeZone = attr.timeZone ?? '';
     this.description = attr.description ?? null;
@@ -77,6 +77,14 @@ export class Meal {
     this.createdAt = attr.createdAt ?? new Date();
     this.rejectedAt = attr.rejectedAt ?? null;
     this.editedAt = attr.editedAt ?? null;
+  }
+
+  requireInputFileKey(): string {
+    if (!this.inputFileKey) {
+      throw new Error(`Meal ${this.id} has no input file.`);
+    }
+
+    return this.inputFileKey;
   }
 
   isEditable(now: Date = new Date()): boolean {
@@ -114,7 +122,7 @@ export namespace Meal {
     id: string;
     accountId: string;
     status: Meal.StatusType;
-    inputFileKey: string;
+    inputFileKey?: string | null;
     inputType: Meal.InputType;
     timeZone?: string;
     description?: string | null;
@@ -156,6 +164,7 @@ export namespace Meal {
   export const InputType = {
     PICTURE: 'PICTURE',
     AUDIO: 'AUDIO',
+    TEXT: 'TEXT',
   };
 
   export type InputType = ValueOf<typeof InputType>;

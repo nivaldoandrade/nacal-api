@@ -9,9 +9,11 @@ export class MealPresenter {
 
   toOutput(meal: Meal): MealPresenter.Output {
     const { canAddItems, unidentified } = meal.getAddItemsState();
-    const inputFileUrl = meal.status === Meal.StatusType.REJECTED || meal.status === Meal.StatusType.FAILED
-      ? null
-      : this.mealFileStorageGateway.getFileURL(meal.inputFileKey);
+    const inputFileUrl = meal.inputFileKey
+      && meal.status !== Meal.StatusType.REJECTED
+      && meal.status !== Meal.StatusType.FAILED
+      ? this.mealFileStorageGateway.getFileURL(meal.inputFileKey)
+      : null;
 
     return {
       id: meal.id,
