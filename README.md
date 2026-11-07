@@ -18,6 +18,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Adicionar item por texto**: Depois do processamento, o usuário pode completar uma refeição `SUCCESS` com um texto curto ("um copo de coca 350ml"); a IA devolve só os itens novos, que são anexados à refeição. Não consome cota, mas é bloqueado para Free sem cota restante; até 5 adições por refeição, só nas primeiras 24h e até 30 itens;
 - **Aviso do que não foi identificado**: Na análise por foto, a IA pode sinalizar (`unidentified`: `DRINK`, `PACKAGED`, `COVERED` ou `OTHER`) algo claramente presente cujo conteúdo não dá para ver (copo opaco, embalagem fechada, recipiente tampado), sem adivinhar o item; o app usa isso para levar ao "Adicionar item". Cada alimento devolvido pela IA também traz `unidentifiedKind`: itens que a própria IA marca como não identificados ("bebida não identificada", "alguma coisa no pote") são removidos no backend; na foto viram esse aviso e, no "Adicionar item", são contados em `unidentifiedFoodsCount`;
 - **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio ou na descrição da foto sobrepondo o horário;
+- **Dia da refeição no fuso do usuário**: A refeição é agrupada no dia local de quando foi registrada (mesmo `timeZone`), então um jantar às 23h fica no mesmo dia do café da manhã, e não no dia seguinte em UTC;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
@@ -169,6 +170,7 @@ O nome e o ícone **não** são definidos pela IA: a API os deriva do **horário
 
 - O horário é calculado com `Intl` no fuso recebido; `timeZone` inválido ou ausente cai no default `America/Sao_Paulo`.
 - A lógica vive em `MealNamingService` (`application/services/`); a IA retorna apenas os alimentos/macros e o `mealType` opcional.
+- O mesmo fuso define o **dia** da refeição: o `GSI1PK` (`MEAL#<accountId>#YYYY-MM-DD`) usa a data local do `createdAt` no `timeZone` salvo, com o mesmo fallback. A regra de fuso e o cálculo do dia ficam em `shared/utils/timeZone.ts`, usados por `MealNamingService` e `MealItem`, o que garante que nome e dia nunca divergem.
 
 ## Fluxo de Autenticação OAuth (Google)
 
@@ -718,7 +720,7 @@ com header `Retry-After` em segundos.
     }'
   ```
 
-- `timeZone` é a zona IANA do dispositivo (ex.: `America/Sao_Paulo`, `Europe/Lisbon`), usada para nomear a refeição; é opcional e cai em `America/Sao_Paulo` se ausente/inválida.
+- `timeZone` é a zona IANA do dispositivo (ex.: `America/Sao_Paulo`, `Europe/Lisbon`), usada para nomear a refeição e definir em qual dia ela aparece; é opcional e cai em `America/Sao_Paulo` se ausente/inválida.
 - `description` é opcional e só aceita fotos (em áudio retorna `400`): texto livre de até 300 caracteres após `trim`; string vazia é tratada como ausente. Não aparece nas respostas de leitura da refeição.
 - `contentType` aceito: `image/jpeg` (até 10 MB), `audio/m4a` ou `audio/webm` (até 2 MB e 1–32s); `fileSize` é em bytes. A validação real do conteúdo acontece no processamento e um arquivo inválido vira `REJECTED`.
 
@@ -753,7 +755,7 @@ com header `Retry-After` em segundos.
 
 #### List Meals -> `/meals`
 
-- Lista refeições de um dia específico:
+- Lista refeições de um dia específico. `date` é o **dia local** do usuário (`YYYY-MM-DD`), não o dia em UTC: a API compara direto com o dia gravado na refeição, calculado no fuso dela:
 
   ```bash
   curl -X GET "https://xxx.execute-api.sa-east-1.amazonaws.com/meals?date=2026-08-26" \
