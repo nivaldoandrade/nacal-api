@@ -39,6 +39,10 @@ export class MealQuotaService {
   }
 
   async ensureAvailable({ accountId, plan }: MealQuotaService.Input): Promise<void> {
+    if (plan !== 'FREE') {
+      return;
+    }
+
     const { remaining } = await this.getUsage({ accountId, plan });
 
     if (remaining === 0) {

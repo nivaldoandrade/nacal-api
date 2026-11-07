@@ -43,6 +43,11 @@ const addItemsSchema = z.object({
   foods: z.array(taggedFoodSchema),
 });
 
+const SYNC_REQUEST_OPTIONS: OpenAI.RequestOptions = {
+  timeout: 12_000,
+  maxRetries: 1,
+};
+
 const textMealSchema = z.object({
   mealType: schema.shape.mealType,
   foods: z.array(taggedFoodSchema),
@@ -144,7 +149,7 @@ export class MealAiGateway {
     ];
 
     try {
-      const result = await this.callOpenAI(mealId, input, addItemsSchema);
+      const result = await this.callOpenAI(mealId, input, addItemsSchema, SYNC_REQUEST_OPTIONS);
       const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(result.foods);
 
       if (unidentifiedFoods.length > 0) {
@@ -181,7 +186,7 @@ export class MealAiGateway {
     ];
 
     try {
-      const { mealType, foods: taggedFoods } = await this.callOpenAI(mealId, input, textMealSchema);
+      const { mealType, foods: taggedFoods } = await this.callOpenAI(mealId, input, textMealSchema, SYNC_REQUEST_OPTIONS);
       const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(taggedFoods);
 
       if (unidentifiedFoods.length > 0) {
@@ -276,6 +281,7 @@ export class MealAiGateway {
     mealId: string,
     input: OpenAI.Responses.ResponseInput,
     outputSchema: TSchema,
+    requestOptions?: OpenAI.RequestOptions,
   ): Promise<z.infer<TSchema>> {
     const response = await this.client.responses.create({
       model: 'gpt-5.4-mini',
@@ -283,7 +289,7 @@ export class MealAiGateway {
       text: {
         format: zodTextFormat(outputSchema, 'meal'),
       },
-    });
+    }, requestOptions);
 
     const { output_text } = response;
     const openAiResponseStringify = JSON.stringify(response, null, 2);

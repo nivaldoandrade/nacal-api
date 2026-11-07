@@ -122,7 +122,7 @@ export namespace Meal {
     id: string;
     accountId: string;
     status: Meal.StatusType;
-    inputFileKey?: string | null;
+    inputFileKey: string | null;
     inputType: Meal.InputType;
     timeZone?: string;
     description?: string | null;
