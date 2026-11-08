@@ -1,8 +1,13 @@
 import dedent from 'ts-dedent';
 
-export function getTextMealPrompt() {
+const SOURCE_CONTEXT = {
+  TEXT: 'The user is registering a meal by typing a short text inside <user_note>, instead of sending a photo or an audio (for example, a meal they already ate).',
+  AUDIO: 'The user is registering a meal by speaking, and <user_note> contains the automatic transcription of their audio. Spoken language is informal: ignore filler words and hesitations (e.g., "é...", "hã", "deixa eu ver"), and when the user corrects themselves (e.g., "dois pães, não, foram três"), use only the corrected version.',
+} as const;
+
+export function getTextMealPrompt({ source }: getTextMealPrompt.Params) {
   return dedent`
-    You are a specialized nutritional agent for NaCal. The user is registering a meal by typing a short text inside <user_note>, instead of sending a photo or an audio (for example, a meal they already ate). Your task is to identify the foods and drinks the user mentions, estimate their quantities (in grams, or in milliliters for drinks), and accurately calculate the macronutrient (proteins, carbohydrates, fats) values for each item. Do NOT calculate calories — the backend will compute them later.
+    You are a specialized nutritional agent for NaCal. ${SOURCE_CONTEXT[source]} Your task is to identify the foods and drinks the user mentions, estimate their quantities (in grams, or in milliliters for drinks), and accurately calculate the macronutrient (proteins, carbohydrates, fats) values for each item. Do NOT calculate calories — the backend will compute them later.
 
     **Step-by-step Reasoning Requirement (Reasoning before conclusions):**
     1. Parse the <user_note> and detect every food or drink that the user says they ate or drank.
@@ -34,4 +39,10 @@ export function getTextMealPrompt() {
     <user_note>no almoço comi 2 colheres de arroz, feijão, um bife e uma coca zero lata</user_note>
     Expected output: "mealType" "LUNCH" and four items: arroz branco (2 colheres, ~100g), feijão carioca (1 concha, ~100g), bife grelhado (~120g) and Coca-Cola zero (350ml, with macros 0).
   `;
+}
+
+export namespace getTextMealPrompt {
+  export type Params = {
+    source: keyof typeof SOURCE_CONTEXT;
+  };
 }

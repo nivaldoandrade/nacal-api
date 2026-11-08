@@ -9,7 +9,6 @@ import { MealNamingService } from '@application/services/MealNamingService';
 import { getAddItemsPrompt } from '@infra/ai/prompts/getAddItemsPrompt';
 import { getImagePrompt } from '@infra/ai/prompts/getImagePrompt';
 import { getTextMealPrompt } from '@infra/ai/prompts/getTextMealPrompt';
-import { getTextPrompt } from '@infra/ai/prompts/getTextPrompt';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { downloadByURL } from '@infra/utils/downloadByURL';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -24,10 +23,7 @@ const foodSchema = z.object({
 
 const unidentifiedKindSchema = z.enum(Meal.unidentifiedKinds).nullable();
 
-const schema = z.object({
-  mealType: z.enum(MealNamingService.MEAL_TYPES).nullable(),
-  foods: z.array(foodSchema),
-});
+const mealTypeSchema = z.enum(MealNamingService.MEAL_TYPES).nullable();
 
 const taggedFoodSchema = foodSchema.extend({
   unidentifiedKind: unidentifiedKindSchema,
@@ -35,7 +31,7 @@ const taggedFoodSchema = foodSchema.extend({
 
 const imageSchema = z.object({
   unidentified: unidentifiedKindSchema,
-  mealType: schema.shape.mealType,
+  mealType: mealTypeSchema,
   foods: z.array(taggedFoodSchema),
 });
 
@@ -49,7 +45,7 @@ const SYNC_REQUEST_OPTIONS: OpenAI.RequestOptions = {
 };
 
 const textMealSchema = z.object({
-  mealType: schema.shape.mealType,
+  mealType: mealTypeSchema,
   foods: z.array(taggedFoodSchema),
 });
 
@@ -107,11 +103,11 @@ export class MealAiGateway {
     ];
 
     const { unidentified, mealType, foods: taggedFoods } = await this.callOpenAI(meal.id, input, imageSchema);
-    const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(taggedFoods);
-
-    if (unidentifiedFoods.length > 0) {
-      console.log(`[UNIDENTIFIED] meal ${meal.id}: removed foods ${JSON.stringify(unidentifiedFoods)}`);
-    }
+    const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods({
+      mealId: meal.id,
+      label: 'foods',
+      taggedFoods,
+    });
 
     return {
       mealType,
@@ -150,11 +146,11 @@ export class MealAiGateway {
 
     try {
       const result = await this.callOpenAI(mealId, input, addItemsSchema, SYNC_REQUEST_OPTIONS);
-      const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(result.foods);
-
-      if (unidentifiedFoods.length > 0) {
-        console.log(`[UNIDENTIFIED] meal ${mealId}: removed added foods ${JSON.stringify(unidentifiedFoods)}`);
-      }
+      const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods({
+        mealId,
+        label: 'added foods',
+        taggedFoods: result.foods,
+      });
 
       return {
         foods,
@@ -169,29 +165,13 @@ export class MealAiGateway {
     mealId,
     text,
   }: MealAiGateway.ExtractMealFromText['params']): Promise<MealAiGateway.ExtractMealFromText['result']> {
-    const input: OpenAI.Responses.ResponseInput = [
-      {
-        role: 'system',
-        content: getTextMealPrompt(),
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: `<user_note>\n${MealAiGateway.sanitize(text)}\n</user_note>`,
-          },
-        ],
-      },
-    ];
-
     try {
-      const { mealType, foods: taggedFoods } = await this.callOpenAI(mealId, input, textMealSchema, SYNC_REQUEST_OPTIONS);
-      const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods(taggedFoods);
-
-      if (unidentifiedFoods.length > 0) {
-        console.log(`[UNIDENTIFIED] meal ${mealId}: removed text foods ${JSON.stringify(unidentifiedFoods)}`);
-      }
+      const { mealType, foods, unidentifiedFoods } = await this.extractMealFromNote({
+        mealId,
+        note: text,
+        source: 'TEXT',
+        requestOptions: SYNC_REQUEST_OPTIONS,
+      });
 
       return {
         mealType,
@@ -206,28 +186,49 @@ export class MealAiGateway {
   private async processMealByAudio(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
     const audioTranscript = await this.transcribe(meal);
 
+    const { mealType, foods } = await this.extractMealFromNote({
+      mealId: meal.id,
+      note: audioTranscript,
+      source: 'AUDIO',
+    });
+
+    return {
+      mealType,
+      foods,
+      unidentified: null,
+    };
+  }
+
+  private async extractMealFromNote({
+    mealId,
+    note,
+    source,
+    requestOptions,
+  }: MealAiGateway.ExtractMealFromNote['params']): Promise<MealAiGateway.ExtractMealFromNote['result']> {
     const input: OpenAI.Responses.ResponseInput = [
       {
         role: 'system',
-        content: getTextPrompt(),
+        content: getTextMealPrompt({ source }),
       },
       {
         role: 'user',
         content: [
           {
             type: 'input_text',
-            text: `Meal: ${audioTranscript}`,
+            text: `<user_note>\n${MealAiGateway.sanitize(note)}\n</user_note>`,
           },
         ],
       },
     ];
 
-    const processedMeal = await this.callOpenAI(meal.id, input, schema);
+    const { mealType, foods: taggedFoods } = await this.callOpenAI(mealId, input, textMealSchema, requestOptions);
+    const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods({
+      mealId,
+      label: `${source.toLowerCase()} foods`,
+      taggedFoods,
+    });
 
-    return {
-      ...processedMeal,
-      unidentified: null,
-    };
+    return { mealType, foods, unidentifiedFoods };
   }
 
   private async transcribe(meal: Meal): Promise<string> {
@@ -256,7 +257,11 @@ export class MealAiGateway {
 
   }
 
-  private static splitUnidentifiedFoods(taggedFoods: MealAiGateway.TaggedFood[]): MealAiGateway.SplitFoods {
+  private static splitUnidentifiedFoods({
+    mealId,
+    label,
+    taggedFoods,
+  }: MealAiGateway.SplitUnidentifiedFoodsParams): MealAiGateway.SplitFoods {
     const foods: MealAiGateway.Food[] = [];
     const unidentifiedFoods: MealAiGateway.SplitFoods['unidentifiedFoods'] = [];
 
@@ -266,6 +271,10 @@ export class MealAiGateway {
       } else {
         foods.push(food);
       }
+    }
+
+    if (unidentifiedFoods.length > 0) {
+      console.log(`[UNIDENTIFIED] meal ${mealId}: removed ${label} ${JSON.stringify(unidentifiedFoods)}`);
     }
 
     return { foods, unidentifiedFoods };
@@ -330,6 +339,8 @@ export class MealAiGateway {
 export namespace MealAiGateway {
   export type Food = z.infer<typeof foodSchema>;
 
+  export type MealType = z.infer<typeof mealTypeSchema>;
+
   export type TaggedFood = z.infer<typeof taggedFoodSchema>;
 
   export type SplitFoods = {
@@ -337,8 +348,30 @@ export namespace MealAiGateway {
     unidentifiedFoods: { name: string; kind: Meal.UnidentifiedKind }[];
   }
 
+  export type SplitUnidentifiedFoodsParams = {
+    mealId: string;
+    label: string;
+    taggedFoods: TaggedFood[];
+  }
+
+  export type ExtractMealFromNote = {
+    params: {
+      mealId: string;
+      note: string;
+      source: getTextMealPrompt.Params['source'];
+      requestOptions?: OpenAI.RequestOptions;
+    };
+    result: {
+      mealType: MealType;
+      foods: Food[];
+      unidentifiedFoods: SplitFoods['unidentifiedFoods'];
+    };
+  }
+
   export type ProcessMeal = {
-    result: z.infer<typeof schema> & {
+    result: {
+      mealType: MealType;
+      foods: Food[];
       unidentified: Meal.UnidentifiedKind | null;
     };
   }
@@ -361,7 +394,7 @@ export namespace MealAiGateway {
       text: string;
     };
     result: {
-      mealType: z.infer<typeof schema>['mealType'];
+      mealType: MealType;
       foods: Food[];
       unidentifiedCount: number;
     };

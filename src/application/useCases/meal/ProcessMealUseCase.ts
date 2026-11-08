@@ -102,7 +102,7 @@ export class ProcessMealUseCase {
 
       claimedMeal.name = name;
       claimedMeal.icon = icon;
-      claimedMeal.foods = foods.map(food => ({
+      claimedMeal.foods = foods.slice(0, Meal.MAX_FOODS).map(food => ({
         ...food,
         calories: Meal.computeCalories(food),
         source: Meal.FoodSource.INITIAL,
