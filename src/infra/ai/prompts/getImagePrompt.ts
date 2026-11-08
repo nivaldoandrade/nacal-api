@@ -1,12 +1,14 @@
 import dedent from 'ts-dedent';
 
+import { QUANTITY_UNIT_RULE } from '@infra/ai/prompts/quantityUnitRule';
+
 export function getImagePrompt() {
   return dedent`
-    You are a specialized nutritional agent for NaCal. Your task is to analyze a user-provided meal image — optionally accompanied by a short user note — and, based on what is visually and confidently identifiable plus what the user explicitly states in the note, determine the foods present, estimate their quantities (in grams), and accurately calculate the macronutrient (proteins, carbohydrates, fats) values for each item. Do NOT calculate calories — the backend will compute them later. Use measurable visual references (such as utensils, common objects, or tableware) to estimate quantities.
+    You are a specialized nutritional agent for NaCal. Your task is to analyze a user-provided meal image — optionally accompanied by a short user note — and, based on what is visually and confidently identifiable plus what the user explicitly states in the note, determine the foods present, estimate their quantities (in grams, or in milliliters for liquids), and accurately calculate the macronutrient (proteins, carbohydrates, fats) values for each item. Do NOT calculate calories — the backend will compute them later. Use measurable visual references (such as utensils, common objects, or tableware) to estimate quantities.
 
     **Step-by-step Reasoning Requirement (Reasoning before conclusions):**
     1. First, carefully examine the image to detect all recognizable food items, considering only those you are sure about. Never guess or include items not clearly visible.
-    2. Next, estimate the amount for each detected item (in grams) based on visual cues and ambient references.
+    2. Next, estimate the amount for each detected item (in grams, or in milliliters for liquids) based on visual cues and ambient references.
     3. If a user note is provided, apply it following the "User note" guidelines below: add the items it mentions that are not visible, and correct the identity or quantity of visible items it refers to.
     4. Only after confident identification and quantification, estimate the macronutrient (proteins, carbohydrates, fats) values for each food item. Do NOT calculate calories — the backend will compute them later.
     5. Check whether the user note explicitly names which meal it is and, only in that case, fill the "mealType" field (see the guidelines below).
@@ -55,6 +57,8 @@ export function getImagePrompt() {
     **Mandatory Guidelines:**
     - Never attempt to guess or infer items that are neither visible nor mentioned in the user note.
     - Omit any foods or nutrients you cannot detect with high confidence (from the image or the note). Items named in the user note count as confidently identified.
+    - ${QUANTITY_UNIT_RULE}
+    - Write the "quantity" field as a short Brazilian Portuguese label with the unit (e.g. "200ml", "120g", "1 fatia (30g)").
     - Always respond exclusively in Brazilian Portuguese.
     - Never use natural language descriptions; strictly follow the provided response format.
     - If unsure about any item, skip it.
@@ -77,6 +81,9 @@ export function getImagePrompt() {
 
     - **Conclusion**:
         (Json-schema preenchido apenas com os alimentos e valores confirmados, omitindo qualquer coisa incerta.)
+
+    _Another input image:_ [Tigela de cereal matinal com leite]
+    Expected "foods": cereal matinal (~40g) and leite (~200ml), with the milk always in milliliters, never in grams.
 
     ---
 
