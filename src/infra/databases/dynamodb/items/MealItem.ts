@@ -27,16 +27,27 @@ export class MealItem {
       createdAt: meal.createdAt.toISOString(),
       rejectedAt: meal.rejectedAt?.toISOString() ?? null,
       editedAt: meal.editedAt?.toISOString() ?? null,
+      deletedAt: meal.deletedAt?.toISOString() ?? null,
     });
   }
 
   static toEntity(mealIdAttr: MealItem.Attributes): Meal {
     return new Meal({
       ...mealIdAttr,
+      foods: MealItem.normalizeFoods(mealIdAttr.foods ?? []),
       createdAt: new Date(mealIdAttr.createdAt),
       rejectedAt: mealIdAttr.rejectedAt ? new Date(mealIdAttr.rejectedAt) : null,
       editedAt: mealIdAttr.editedAt ? new Date(mealIdAttr.editedAt) : null,
+      deletedAt: mealIdAttr.deletedAt ? new Date(mealIdAttr.deletedAt) : null,
     });
+  }
+
+  static normalizeFoods(foods: MealItem.StoredFood[]): Meal.FoodType[] {
+    return foods.map((food, index) => ({
+      ...food,
+      id: food.id ?? `f${index}`,
+      order: food.order ?? index,
+    }));
   }
 
   getItem(): MealItem.ItemType {
@@ -102,17 +113,25 @@ export namespace MealItem {
     attempts?: number;
     name: string;
     icon?: string;
-    foods?: Meal.FoodType[];
+    foods?: MealItem.StoredFood[];
+    removedFoods?: Meal.RemovedFoodType[];
     rejectionReason?: Meal.RejectionReason | null;
     gateScore?: number | null;
     quotaMonth?: string | null;
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
     itemAdditions?: number;
+    foodsVersion?: number;
     unidentified?: Meal.UnidentifiedKind | null;
     createdAt: string;
     rejectedAt?: string | null;
     editedAt?: string | null;
+    deletedAt?: string | null;
+  }
+
+  export type StoredFood = Omit<Meal.FoodType, 'id' | 'order'> & {
+    id?: string;
+    order?: number;
   }
 
   export type ItemType = Keys & Attributes & {

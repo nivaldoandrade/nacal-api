@@ -35,6 +35,7 @@ export class GetMealByIdController extends Controller<'private'> {
         inputFileType: meal.inputFileType,
         inputFileUrl: meal.inputFileUrl,
         canAddItems: meal.canAddItems,
+        canRemoveItems: meal.canRemoveItems,
         unidentified: meal.unidentified,
         createdAt: meal.createdAt,
       },
@@ -59,6 +60,7 @@ export namespace GetMealByIdController {
     icon: string;
     foods: Meal.FoodType[];
     canAddItems: boolean;
+    canRemoveItems: boolean;
     unidentified: Meal.UnidentifiedKind | null;
     createdAt?: Date;
   }

@@ -1,3 +1,8 @@
+import { MealItemLimitReached } from '@application/errors/application/MealItemLimitReached';
+import { MealLastItem } from '@application/errors/application/MealLastItem';
+import { MealNotEditable } from '@application/errors/application/MealNotEditable';
+import { ResourceNotFound } from '@application/errors/application/ResourceNotFound';
+import { generateUniqueId } from '@shared/utils/generateUniqueId';
 import { ValueOf } from '@shared/utils/ValueOf';
 
 export class Meal {
@@ -35,6 +40,8 @@ export class Meal {
 
   foods: Meal.FoodType[];
 
+  removedFoods: Meal.RemovedFoodType[];
+
   rejectionReason: Meal.RejectionReason | null;
 
   gateScore: number | null;
@@ -47,6 +54,8 @@ export class Meal {
 
   itemAdditions: number;
 
+  foodsVersion: number;
+
   unidentified: Meal.UnidentifiedKind | null;
 
   readonly createdAt: Date;
@@ -54,6 +63,8 @@ export class Meal {
   rejectedAt: Date | null;
 
   editedAt: Date | null;
+
+  deletedAt: Date | null;
 
   constructor(attr: Meal.Attributes) {
     this.id = attr.id;
@@ -67,16 +78,19 @@ export class Meal {
     this.name = attr.name ?? '';
     this.icon = attr.icon ?? '';
     this.foods = attr.foods ?? [];
+    this.removedFoods = attr.removedFoods ?? [];
     this.rejectionReason = attr.rejectionReason ?? null;
     this.gateScore = attr.gateScore ?? null;
     this.quotaMonth = attr.quotaMonth ?? null;
     this.quotaRefunded = attr.quotaRefunded ?? false;
     this.leaseExpiresAt = attr.leaseExpiresAt ?? null;
     this.itemAdditions = attr.itemAdditions ?? 0;
+    this.foodsVersion = attr.foodsVersion ?? 0;
     this.unidentified = attr.unidentified ?? null;
     this.createdAt = attr.createdAt ?? new Date();
     this.rejectedAt = attr.rejectedAt ?? null;
     this.editedAt = attr.editedAt ?? null;
+    this.deletedAt = attr.deletedAt ?? null;
   }
 
   requireInputFileKey(): string {
@@ -115,6 +129,78 @@ export class Meal {
     };
   }
 
+  isDeletable(): boolean {
+    return Meal.deletableStatuses.includes(this.status);
+  }
+
+  canRemoveItems(): boolean {
+    return this.status === Meal.StatusType.SUCCESS;
+  }
+
+  removeFood(foodId: string, now: Date = new Date()): boolean {
+    if (!this.canRemoveItems()) {
+      throw new MealNotEditable();
+    }
+
+    if (this.removedFoods.some((food) => food.id === foodId)) {
+      return false;
+    }
+
+    const position = this.foods.findIndex((food) => food.id === foodId);
+
+    if (position === -1) {
+      throw new ResourceNotFound('Meal item not found.');
+    }
+
+    if (this.foods.length === 1) {
+      throw new MealLastItem();
+    }
+
+    const [food] = this.foods.splice(position, 1);
+
+    this.removedFoods.push({
+      ...food,
+      removedAt: now.toISOString(),
+    });
+    this.editedAt = now;
+
+    return true;
+  }
+
+  restoreFood(foodId: string, now: Date = new Date()): boolean {
+    if (!this.canRemoveItems()) {
+      throw new MealNotEditable();
+    }
+
+    if (this.foods.some((food) => food.id === foodId)) {
+      return false;
+    }
+
+    const removedIndex = this.removedFoods.findIndex((food) => food.id === foodId);
+
+    if (removedIndex === -1) {
+      throw new ResourceNotFound('Meal item not found.');
+    }
+
+    if (this.foods.length >= Meal.MAX_FOODS) {
+      throw new MealItemLimitReached();
+    }
+
+    const [{ removedAt: _removedAt, ...food }] = this.removedFoods.splice(removedIndex, 1);
+    const nextIndex = this.foods.findIndex((current) => current.order > food.order);
+
+    this.foods.splice(nextIndex === -1 ? this.foods.length : nextIndex, 0, food);
+    this.editedAt = now;
+
+    return true;
+  }
+
+  nextFoodOrder(): number {
+    const orders = [...this.foods, ...this.removedFoods].map((food) => food.order);
+
+    return orders.length === 0 ? 0 : Math.max(...orders) + 1;
+  }
+
 }
 
 export namespace Meal {
@@ -130,16 +216,19 @@ export namespace Meal {
     name?: string;
     icon?: string;
     foods?: Meal.FoodType[];
+    removedFoods?: Meal.RemovedFoodType[];
     rejectionReason?: Meal.RejectionReason | null;
     gateScore?: number | null;
     quotaMonth?: string | null;
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
     itemAdditions?: number;
+    foodsVersion?: number;
     unidentified?: Meal.UnidentifiedKind | null;
     createdAt?: Date;
     rejectedAt?: Date | null;
     editedAt?: Date | null;
+    deletedAt?: Date | null;
   }
 
   export const StatusType = {
@@ -149,9 +238,16 @@ export namespace Meal {
     SUCCESS: 'SUCCESS',
     REJECTED: 'REJECTED',
     FAILED: 'FAILED',
+    DELETED: 'DELETED',
   };
 
   export type StatusType = ValueOf<typeof StatusType>;
+
+  export const deletableStatuses: StatusType[] = [
+    StatusType.SUCCESS,
+    StatusType.REJECTED,
+    StatusType.FAILED,
+  ];
 
   export const RejectionReason = {
     NOT_A_MEAL: 'NOT_A_MEAL',
@@ -232,6 +328,8 @@ export namespace Meal {
   export const unidentifiedKinds = Object.values(UnidentifiedKind) as [UnidentifiedKind, ...UnidentifiedKind[]];
 
   export type FoodType = {
+    id: string;
+    order: number;
     name: string;
     quantity: string;
     calories: number;
@@ -241,10 +339,30 @@ export namespace Meal {
     source?: FoodSource;
   };
 
+  export type RemovedFoodType = FoodType & {
+    removedAt: string;
+  };
+
   export type FoodMacros = Pick<FoodType, 'carbohydrates' | 'proteins' | 'fats'>;
+
+  export type FoodInput = Pick<FoodType, 'name' | 'quantity'> & FoodMacros;
 
   export function computeCalories({ carbohydrates, proteins, fats }: FoodMacros): number {
     return Math.round((carbohydrates * 4) + (proteins * 4) + (fats * 9));
+  }
+
+  export function createFood(food: FoodInput, source: FoodSource, order: number): FoodType {
+    return {
+      id: generateUniqueId(),
+      order,
+      name: food.name,
+      quantity: food.quantity,
+      calories: computeCalories(food),
+      proteins: food.proteins,
+      carbohydrates: food.carbohydrates,
+      fats: food.fats,
+      source,
+    };
   }
 
 }

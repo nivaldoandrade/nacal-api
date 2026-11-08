@@ -17,6 +17,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Descrição opcional na foto**: Texto livre (até 300 caracteres) enviado junto com a foto para completar o que a imagem não mostra (bebida em copo opaco, ingrediente escondido, quantidade, qual refeição foi);
 - **Refeição por texto**: Uma frase digitada ("no almoço comi arroz, feijão e um bife", até 500 caracteres) vira uma refeição `SUCCESS` numa chamada síncrona (`POST /meals/text`), sem upload, fila ou polling. Consome 1 refeição da cota só quando dá certo;
 - **Adicionar item por texto**: Depois do processamento, o usuário pode completar uma refeição `SUCCESS` com um texto curto ("um copo de coca 350ml"); a IA devolve só os itens novos, que são anexados à refeição. Não consome cota, mas é bloqueado para Free sem cota restante; até 5 adições por refeição, só nas primeiras 24h e até 30 itens;
+- **Remover item e excluir refeição**: Em uma refeição `SUCCESS`, o usuário pode remover um item (o item vai para `removedFoods` e pode ser restaurado na mesma posição, para o "Desfazer" do app) e excluir a refeição inteira (soft delete com status `DELETED` e remoção do arquivo no S3, sem estorno de cota). Sem IA e sem janela de 24h; a refeição precisa manter pelo menos um item;
 - **Aviso do que não foi identificado**: Na análise por foto, a IA pode sinalizar (`unidentified`: `DRINK`, `PACKAGED`, `COVERED` ou `OTHER`) algo claramente presente cujo conteúdo não dá para ver (copo opaco, embalagem fechada, recipiente tampado), sem adivinhar o item; o app usa isso para levar ao "Adicionar item". Cada alimento devolvido pela IA também traz `unidentifiedKind`: itens que a própria IA marca como não identificados ("bebida não identificada", "alguma coisa no pote") são removidos no backend; na foto viram esse aviso e, no "Adicionar item", são contados em `unidentifiedFoodsCount`;
 - **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio, no texto ou na descrição da foto sobrepondo o horário;
 - **Dia da refeição no fuso do usuário**: A refeição é agrupada no dia local de quando foi registrada (mesmo `timeZone`), então um jantar às 23h fica no mesmo dia do café da manhã, e não no dia seguinte em UTC;
@@ -128,6 +129,7 @@ Não passa por S3, SQS nem `processMeal`: `POST /meals/text` resolve tudo na pr�
 | ------ | --------------- | ---- | -------------- |
 | `REJECTED` | Arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos | Estornada | `null` |
 | `FAILED` | Falha de plataforma após 2 tentativas (OpenAI, timeout, S3, resposta inválida) | Estornada | `null` |
+| `DELETED` | Usuário excluiu a refeição (`DELETE /meals/{id}`) | Não estornada | some da API (`404`) |
 
 Os motivos de rejeição são `INVALID_FILE`, `NOT_A_MEAL` e `NO_FOOD_DETECTED`. Uma tentativa rejeitada ou com falha continua contando no rate limit de `POST /create-meal`.
 
@@ -402,6 +404,9 @@ endpoints:
   GET  - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/text
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}/items
+  DELETE - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}
+  DELETE - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}/items/{itemId}
+  POST - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}/items/{itemId}/restore
 functions:
   hello: nacal-api-dev-hello
   signUp: nacal-api-dev-signUp
@@ -476,9 +481,12 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 | ------ | ------------------------ | ------------------------------------------------------ | ------------ |
 | POST   | `/create-meal`           | Cria uma refeição (JPEG ≤10 MB ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
-| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos, `canAddItems` e `unidentified` | JWT          |
+| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos, `canAddItems`, `canRemoveItems` e `unidentified` | JWT          |
 | POST   | `/meals/text`            | Cria uma refeição a partir de um texto (IA síncrona) e devolve a refeição pronta | JWT          |
 | POST   | `/meals/{id}/items`      | Adiciona itens a uma refeição `SUCCESS` a partir de texto (IA síncrona) | JWT          |
+| DELETE | `/meals/{id}`            | Exclui a refeição (soft delete + remove o arquivo do S3) | JWT          |
+| DELETE | `/meals/{id}/items/{itemId}` | Remove um item de uma refeição `SUCCESS` | JWT          |
+| POST   | `/meals/{id}/items/{itemId}/restore` | Restaura um item removido (o "Desfazer" do app) | JWT          |
 
 ### Billing
 
@@ -512,6 +520,9 @@ Proteção contra abuso e excesso de requests, implementada **em código** (sem 
 | `POST /create-meal` | conta | 10 / 1h |
 | `POST /meals/text` | conta | 10 / 1h |
 | `POST /meals/{id}/items` | conta | 20 / 1h |
+| `DELETE /meals/{id}` | conta | 30 / 1h |
+| `DELETE /meals/{id}/items/{itemId}` | conta | 60 / 1h |
+| `POST /meals/{id}/items/{itemId}/restore` | conta | 60 / 1h |
 | `POST /billing/trial` | conta | 5 / 1h |
 | `POST /billing/webhooks/asaas` | IP | 120 / 60s |
 
@@ -839,6 +850,7 @@ com header `Retry-After` em segundos.
     "icon": "",
     "foods": [],
     "canAddItems": false,
+    "canRemoveItems": false,
     "unidentified": null,
     "createdAt": "2026-10-22T15:00:00.000Z"
   }
@@ -848,7 +860,9 @@ com header `Retry-After` em segundos.
 - Em `REJECTED`, `inputFileUrl` é `null` porque o arquivo é removido do S3; `rejectionReason` indica o motivo (`INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`).
 - `canAddItems` indica se a refeição ainda aceita `POST /meals/{id}/items` (status `SUCCESS`, dentro das 24h e abaixo dos limites); não considera a cota do plano Free.
 - `unidentified` traz a categoria do que a IA viu e não conseguiu identificar na foto (`DRINK`, `PACKAGED`, `COVERED`, `OTHER`) ou `null`. Só vem preenchido enquanto `canAddItems` é `true` e nenhuma adição foi feita; depois disso volta `null` (o valor original continua salvo na refeição). Refeições por áudio, por texto e refeições antigas sempre trazem `null`.
-- Cada alimento pode trazer `source`: `INITIAL` (identificado no processamento) ou `ADDED` (adicionado por texto). Refeições antigas não têm o campo.
+- `canRemoveItems` indica se a refeição aceita remover e restaurar itens (status `SUCCESS`, sem janela de tempo). A regra de manter pelo menos um item fica no app, que oferece excluir a refeição no lugar.
+- Cada alimento traz `id` e `order` (ordem estável usada para restaurar um item removido na mesma posição). Refeições antigas não têm esses campos gravados: a API devolve `id: "f<posição>"` e `order: <posição>`, e eles passam a ser gravados na primeira remoção. Também pode trazer `source`: `INITIAL` (identificado no processamento) ou `ADDED` (adicionado por texto); refeições antigas não têm esse campo.
+- Refeições excluídas (`DELETED`) respondem `404`. A leitura é fortemente consistente, para refletir na hora uma edição recém-feita.
 
 #### Create Text Meal -> `/meals/text`
 
@@ -956,6 +970,71 @@ com header `Retry-After` em segundos.
   | `422` | `NO_FOOD_IDENTIFIED` | A IA não encontrou nenhum alimento no texto, ou só encontrou menções que não dizem o que era ("alguma coisa no pote", "um pacotinho"), que são descartadas |
   | `403` | `FREE_QUOTA_EXCEEDED` | Usuário Free sem cota restante no mês |
   | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 20 chamadas na hora |
+
+#### Delete Meal -> `/meals/{id}`
+
+- Exclui uma refeição:
+
+  ```bash
+  curl -X DELETE https://xxx.execute-api.sa-east-1.amazonaws.com/meals/2CkS0wZr5cY3xK1mN7jQ9bT2vL \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+  ```
+
+- Responde `204` sem corpo. É um soft delete: a refeição fica com `status: "DELETED"` e `deletedAt`, sai da listagem (que só traz `SUCCESS`) e passa a responder `404` nas outras rotas. Depois, o arquivo de entrada é removido do S3; se essa remoção falhar, o erro vai para o log e a resposta continua `204`.
+- **Não estorna a cota** do mês.
+- Aceita refeições `SUCCESS`, `REJECTED` e `FAILED`. Durante o processamento (`UPLOADING`, `QUEUED`, `PROCESSING`) responde `409 MEAL_NOT_EDITABLE`, para não disputar a refeição com o `processMeal`.
+- Uma refeição já excluída responde `404`; o app trata isso como sucesso.
+
+- Erros:
+
+  | Status | Código | Quando |
+  |---|---|---|
+  | `404` | `RESOURCE_NOT_FOUND` | Refeição não existe, já foi excluída ou é de outra conta |
+  | `409` | `MEAL_NOT_EDITABLE` | Refeição ainda em processamento |
+  | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 30 chamadas na hora |
+
+#### Remove Meal Item -> `/meals/{id}/items/{itemId}`
+
+- Remove um item de uma refeição `SUCCESS`:
+
+  ```bash
+  curl -X DELETE https://xxx.execute-api.sa-east-1.amazonaws.com/meals/2CkS0wZr5cY3xK1mN7jQ9bT2vL/items/2CkS1aBc9dE8fG7hI6jK5lM4nO \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+  ```
+
+- Responde `200` com `{ "meal": { ... } }` (mesmos campos do `GET /meals/{id}`).
+- Sem IA e sem janela de 24h. O item sai de `foods` e vai para `removedFoods` (com `removedAt`), que guarda os itens para o "Desfazer" e serve de métrica de erro da IA; `editedAt` é atualizado. `itemAdditions` e `unidentified` não mudam, e um item removido libera vaga no limite de 30 itens.
+- É idempotente: remover um item que já está em `removedFoods` devolve a refeição sem mudar nada.
+- A gravação usa trava otimista pelo contador `foodsVersion` (incrementado também pelo `POST /meals/{id}/items`), com leitura consistente e até 3 tentativas, então remoções e adições concorrentes não se sobrescrevem.
+
+- Erros:
+
+  | Status | Código | Quando |
+  |---|---|---|
+  | `404` | `RESOURCE_NOT_FOUND` | Refeição ou item não existe |
+  | `409` | `MEAL_NOT_EDITABLE` | Refeição não está `SUCCESS` |
+  | `409` | `MEAL_LAST_ITEM` | É o último item da refeição (exclua a refeição) |
+  | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 60 chamadas na hora |
+
+#### Restore Meal Item -> `/meals/{id}/items/{itemId}/restore`
+
+- Devolve um item removido para a refeição, na posição original (pela `order` do item):
+
+  ```bash
+  curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/meals/2CkS0wZr5cY3xK1mN7jQ9bT2vL/items/2CkS1aBc9dE8fG7hI6jK5lM4nO/restore \
+    -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+  ```
+
+- Responde `200` com `{ "meal": { ... } }`. É idempotente: restaurar um item que já está em `foods` devolve a refeição sem mudar nada.
+
+- Erros:
+
+  | Status | Código | Quando |
+  |---|---|---|
+  | `404` | `RESOURCE_NOT_FOUND` | Refeição não existe ou o item não está em `removedFoods` |
+  | `409` | `MEAL_NOT_EDITABLE` | Refeição não está `SUCCESS` |
+  | `409` | `MEAL_ITEM_LIMIT_REACHED` | A refeição já tem 30 itens |
+  | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 60 chamadas na hora |
 
 #### Get Plans -> `/billing/plans`
 

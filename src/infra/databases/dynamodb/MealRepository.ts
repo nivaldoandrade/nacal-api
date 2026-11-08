@@ -12,7 +12,7 @@ export class MealRepository {
 
   constructor(private readonly config: AppConfig) { }
 
-  async markQueued({ accountId, mealId }: MealRepository.FindByIdParams): Promise<boolean> {
+  async markQueued({ accountId, mealId }: MealRepository.KeyParams): Promise<boolean> {
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.mainTable,
       Key: MealRepository.getKey({ accountId, mealId }),
@@ -162,6 +162,7 @@ export class MealRepository {
       UpdateExpression: [
         'SET #foods = list_append(if_not_exists(#foods, :empty), :newFoods),',
         '#itemAdditions = if_not_exists(#itemAdditions, :zero) + :one,',
+        '#foodsVersion = if_not_exists(#foodsVersion, :zero) + :one,',
         '#editedAt = :now',
       ].join(' '),
       ConditionExpression: [
@@ -175,6 +176,7 @@ export class MealRepository {
         '#createdAt': 'createdAt',
         '#foods': 'foods',
         '#itemAdditions': 'itemAdditions',
+        '#foodsVersion': 'foodsVersion',
         '#editedAt': 'editedAt',
       },
       ExpressionAttributeValues: {
@@ -198,6 +200,87 @@ export class MealRepository {
     }
 
     return MealItem.toEntity(output.Attributes as MealItem.ItemType);
+  }
+
+  async saveFoods({
+    meal,
+    expectedVersion,
+  }: MealRepository.SaveFoodsParams): Promise<Meal | null> {
+    const expressionAttributeValues: Record<string, unknown> = {
+      ':success': Meal.StatusType.SUCCESS,
+      ':foods': meal.foods,
+      ':removedFoods': meal.removedFoods,
+      ':editedAt': meal.editedAt?.toISOString() ?? null,
+      ':nextVersion': expectedVersion + 1,
+    };
+    const conditions = ['#status = :success'];
+
+    if (expectedVersion === 0) {
+      conditions.push('attribute_not_exists(#foodsVersion)');
+    } else {
+      expressionAttributeValues[':expectedVersion'] = expectedVersion;
+      conditions.push('#foodsVersion = :expectedVersion');
+    }
+
+    const command = new UpdateCommand({
+      TableName: this.config.db.dynamodb.mainTable,
+      Key: MealRepository.getKey({
+        accountId: meal.accountId,
+        mealId: meal.id,
+      }),
+      UpdateExpression: [
+        'SET #foods = :foods,',
+        '#removedFoods = :removedFoods,',
+        '#editedAt = :editedAt,',
+        '#foodsVersion = :nextVersion',
+      ].join(' '),
+      ConditionExpression: conditions.join(' AND '),
+      ExpressionAttributeNames: {
+        '#status': 'status',
+        '#foods': 'foods',
+        '#removedFoods': 'removedFoods',
+        '#editedAt': 'editedAt',
+        '#foodsVersion': 'foodsVersion',
+      },
+      ExpressionAttributeValues: expressionAttributeValues,
+      ReturnValues: 'ALL_NEW',
+    });
+
+    const output = await this.sendConditionalUpdate(command);
+
+    if (!output?.Attributes) {
+      return null;
+    }
+
+    return MealItem.toEntity(output.Attributes as MealItem.ItemType);
+  }
+
+  async markDeleted({ meal, now }: MealRepository.MarkDeletedParams): Promise<boolean> {
+    const statusValues = Object.fromEntries(
+      Meal.deletableStatuses.map((status, index) => [`:status${index}`, status]),
+    );
+
+    const command = new UpdateCommand({
+      TableName: this.config.db.dynamodb.mainTable,
+      Key: MealRepository.getKey({
+        accountId: meal.accountId,
+        mealId: meal.id,
+      }),
+      UpdateExpression: 'SET #status = :deleted, #deletedAt = :now',
+      ConditionExpression: `#status IN (${Object.keys(statusValues).join(', ')})`,
+      ExpressionAttributeNames: {
+        '#status': 'status',
+        '#deletedAt': 'deletedAt',
+      },
+      ExpressionAttributeValues: {
+        ...statusValues,
+        ':deleted': Meal.StatusType.DELETED,
+        ':now': now.toISOString(),
+      },
+      ReturnValues: 'NONE',
+    });
+
+    return this.sendConditional(command);
   }
 
   async failAndRefund({ meal }: MealRepository.FailAndRefundParams): Promise<MealRepository.FailAndRefundResult> {
@@ -579,20 +662,21 @@ export class MealRepository {
     }
   }
 
-  private static getKey({ accountId, mealId }: MealRepository.FindByIdParams): MealRepository.Key {
+  private static getKey({ accountId, mealId }: MealRepository.KeyParams): MealRepository.Key {
     return {
       PK: MealItem.getPK({ accountId, mealId }),
       SK: MealItem.getSK(mealId),
     };
   }
 
-  async findById({ accountId, mealId }: MealRepository.FindByIdParams): Promise<Meal | null> {
+  async findById({ accountId, mealId, consistentRead }: MealRepository.FindByIdParams): Promise<Meal | null> {
     const command = new GetCommand({
       TableName: this.config.db.dynamodb.mainTable,
       Key: {
         PK: MealItem.getPK({ accountId, mealId }),
         SK: MealItem.getSK(mealId),
       },
+      ConsistentRead: consistentRead,
     });
 
     const { Item } = await dynamodbClient.send(command);
@@ -601,9 +685,15 @@ export class MealRepository {
       return null;
     }
 
-    const mealItem = Item as MealItem.ItemType;
+    return MealItem.toEntity(Item as MealItem.ItemType);
+  }
 
-    const meal = MealItem.toEntity(mealItem);
+  async findActiveById(params: MealRepository.FindByIdParams): Promise<Meal | null> {
+    const meal = await this.findById(params);
+
+    if (!meal || meal.status === Meal.StatusType.DELETED) {
+      return null;
+    }
 
     return meal;
   }
@@ -626,6 +716,12 @@ namespace MealRepository {
   export type FindByIdParams = {
     accountId: string;
     mealId: string;
+    consistentRead?: boolean;
+  }
+
+  export type KeyParams = {
+    accountId: string;
+    mealId: string;
   }
 
   export type Key = {
@@ -633,11 +729,11 @@ namespace MealRepository {
     SK: string;
   }
 
-  export type MarkForRetryParams = FindByIdParams & {
+  export type MarkForRetryParams = KeyParams & {
     leaseExpiresAt: number;
   }
 
-  export type ClaimForProcessingParams = FindByIdParams & {
+  export type ClaimForProcessingParams = KeyParams & {
     leaseExpiresAt: number;
     now: number;
   }
@@ -648,12 +744,22 @@ namespace MealRepository {
     now: Date;
   }
 
+  export type SaveFoodsParams = {
+    meal: Meal;
+    expectedVersion: number;
+  }
+
+  export type MarkDeletedParams = {
+    meal: Meal;
+    now: Date;
+  }
+
   export type MarkSuccessParams = {
     meal: Meal;
     gateScore?: number | null;
   }
 
-  export type MarkRejectedParams = FindByIdParams & {
+  export type MarkRejectedParams = KeyParams & {
     reason: Meal.RejectionReason;
     gateScore?: number | null;
     quotaRefunded: boolean;

@@ -42,6 +42,30 @@ addMealItems:
         method: post
         authorizer:
           name: CognitoAuthorizer
+deleteMeal:
+  handler: src/main/functions/meal/deleteMeal.handler
+  events:
+    - httpApi:
+        path: /meals/{id}
+        method: delete
+        authorizer:
+          name: CognitoAuthorizer
+removeMealItem:
+  handler: src/main/functions/meal/removeMealItem.handler
+  events:
+    - httpApi:
+        path: /meals/{id}/items/{itemId}
+        method: delete
+        authorizer:
+          name: CognitoAuthorizer
+restoreMealItem:
+  handler: src/main/functions/meal/restoreMealItem.handler
+  events:
+    - httpApi:
+        path: /meals/{id}/items/{itemId}/restore
+        method: post
+        authorizer:
+          name: CognitoAuthorizer
 processMeal:
   handler: src/main/functions/meal/processMeal.handler
   memorySize: 1024

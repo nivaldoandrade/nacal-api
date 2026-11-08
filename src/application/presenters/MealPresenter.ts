@@ -25,6 +25,7 @@ export class MealPresenter {
       inputFileType: meal.inputType,
       inputFileUrl: inputFileUrl,
       canAddItems,
+      canRemoveItems: meal.canRemoveItems(),
       unidentified,
       createdAt: meal.createdAt,
     };
@@ -42,6 +43,7 @@ export namespace MealPresenter {
     icon: string;
     foods: Meal.FoodType[];
     canAddItems: boolean;
+    canRemoveItems: boolean;
     unidentified: Meal.UnidentifiedKind | null;
     createdAt: Date;
   }

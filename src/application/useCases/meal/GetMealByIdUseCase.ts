@@ -12,7 +12,11 @@ export class GetMealByIdUseCase {
   ) { }
 
   async execute({ accountId, mealId }: GetMealByIdUseCase.Input): Promise<GetMealByIdUseCase.Output> {
-    const meal = await this.mealRepository.findById({ accountId, mealId });
+    const meal = await this.mealRepository.findActiveById({
+      accountId,
+      mealId,
+      consistentRead: true,
+    });
 
     if (!meal) {
       throw new ResourceNotFound('Meal not found.');

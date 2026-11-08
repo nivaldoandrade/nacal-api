@@ -49,7 +49,7 @@ export class ListMealsByAccountIdAndDay {
         id: item.id,
         name: item.name,
         icon: item.icon,
-        foods: item.foods,
+        foods: MealItem.normalizeFoods(item.foods ?? []),
         createdAt: item.createdAt,
         timeZone: resolveTimeZone(item.timeZone),
       }),
@@ -71,7 +71,7 @@ export namespace ListMealsByAccountIdAndDay {
     id: string;
     name: string;
     icon: string;
-    foods: Meal.FoodType[];
+    foods?: MealItem.StoredFood[];
     createdAt: string;
     timeZone?: string;
   }

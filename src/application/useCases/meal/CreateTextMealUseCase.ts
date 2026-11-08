@@ -37,11 +37,7 @@ export class CreateTextMealUseCase {
 
     const mealFoods: Meal.FoodType[] = foods
       .slice(0, Meal.MAX_FOODS)
-      .map((food) => ({
-        ...food,
-        calories: Meal.computeCalories(food),
-        source: Meal.FoodSource.INITIAL,
-      }));
+      .map((food, index) => Meal.createFood(food, Meal.FoodSource.INITIAL, index));
 
     if (mealFoods.length === 0) {
       throw new NoFoodIdentified();

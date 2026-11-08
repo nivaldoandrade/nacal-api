@@ -23,7 +23,7 @@ export class AddMealItemsUseCase {
   ) { }
 
   async execute({ accountId, mealId, text }: AddMealItemsUseCase.Input): Promise<AddMealItemsUseCase.Output> {
-    const meal = await this.mealRepository.findById({ accountId, mealId });
+    const meal = await this.mealRepository.findActiveById({ accountId, mealId });
 
     if (!meal) {
       throw new ResourceNotFound('Meal not found.');
@@ -48,13 +48,10 @@ export class AddMealItemsUseCase {
     });
 
     const remainingSlots = Meal.MAX_FOODS - meal.foods.length;
+    const firstOrder = meal.nextFoodOrder();
     const newFoods: Meal.FoodType[] = foods
       .slice(0, remainingSlots)
-      .map((food) => ({
-        ...food,
-        calories: Meal.computeCalories(food),
-        source: Meal.FoodSource.ADDED,
-      }));
+      .map((food, index) => Meal.createFood(food, Meal.FoodSource.ADDED, firstOrder + index));
 
     if (newFoods.length === 0) {
       throw new NoFoodIdentified();
@@ -90,7 +87,7 @@ export class AddMealItemsUseCase {
     mealId,
     now,
   }: AddMealItemsUseCase.ResolveAppendFailureParams): Promise<Error> {
-    const currentMeal = await this.mealRepository.findById({ accountId, mealId });
+    const currentMeal = await this.mealRepository.findActiveById({ accountId, mealId });
 
     if (!currentMeal) {
       return new ResourceNotFound('Meal not found.');

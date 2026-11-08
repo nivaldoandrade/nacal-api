@@ -102,11 +102,9 @@ export class ProcessMealUseCase {
 
       claimedMeal.name = name;
       claimedMeal.icon = icon;
-      claimedMeal.foods = foods.slice(0, Meal.MAX_FOODS).map(food => ({
-        ...food,
-        calories: Meal.computeCalories(food),
-        source: Meal.FoodSource.INITIAL,
-      }));
+      claimedMeal.foods = foods
+        .slice(0, Meal.MAX_FOODS)
+        .map((food, index) => Meal.createFood(food, Meal.FoodSource.INITIAL, index));
       claimedMeal.unidentified = unidentified;
 
       const markedAsSuccess = await this.mealRepository.markSuccess({
@@ -230,7 +228,8 @@ export class ProcessMealUseCase {
   private static isTerminal(status: Meal.StatusType): boolean {
     return status === Meal.StatusType.SUCCESS
       || status === Meal.StatusType.REJECTED
-      || status === Meal.StatusType.FAILED;
+      || status === Meal.StatusType.FAILED
+      || status === Meal.StatusType.DELETED;
   }
 }
 
