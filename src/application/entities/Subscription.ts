@@ -95,6 +95,8 @@ export namespace Subscription {
 
   export type PlanIdType = ValueOf<typeof PlanId>;
 
+  export const PRO_DAILY_MEAL_LIMIT = 20;
+
   export const Plan = {
     PRO_MONTHLY: {
       id: 'PRO_MONTHLY',
@@ -102,15 +104,15 @@ export namespace Subscription {
       priceCents: 999,
       cycle: 'MONTHLY',
       trialDays: 7,
-      features: ['Refeições AI ilimitadas'],
+      features: [`Até ${PRO_DAILY_MEAL_LIMIT} refeições AI por dia`],
     },
     PRO_YEARLY: {
       id: 'PRO_YEARLY',
       name: 'Pro Anual',
-      priceCents: 9990,
+      priceCents: 8990,
       cycle: 'YEARLY',
       trialDays: 7,
-      features: ['Refeições AI ilimitadas'],
+      features: [`Até ${PRO_DAILY_MEAL_LIMIT} refeições AI por dia`],
     },
   } as const;
 

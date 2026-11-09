@@ -118,6 +118,7 @@ export namespace MealItem {
     rejectionReason?: Meal.RejectionReason | null;
     gateScore?: number | null;
     quotaMonth?: string | null;
+    quotaDay?: string | null;
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
     itemAdditions?: number;

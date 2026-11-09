@@ -21,7 +21,7 @@ export class CreateMealUseCase {
     const subscription = await this.subscriptionRepository.findByAccountId(accountId);
     const plan = Subscription.resolveEffectivePlan(subscription);
 
-    const { quotaMonth } = await this.mealQuotaService.consume({ accountId, plan });
+    const { quotaMonth, quotaDay } = await this.mealQuotaService.consume({ accountId, plan });
 
     try {
       const mealId = generateUniqueId();
@@ -40,6 +40,7 @@ export class CreateMealUseCase {
         description,
         status: Meal.StatusType.UPLOADING,
         quotaMonth,
+        quotaDay,
       });
 
       const { uploadSignature } = await this.mealStorageGateway.getPOST({
@@ -58,7 +59,7 @@ export class CreateMealUseCase {
       };
     } catch (error) {
       try {
-        await this.mealQuotaService.refund({ accountId, quotaMonth });
+        await this.mealQuotaService.refund({ accountId, quotaMonth, quotaDay });
       } catch (refundError) {
         // eslint-disable-next-line no-console
         console.error(`Failed to refund meal quota for account ${accountId}:`, refundError);

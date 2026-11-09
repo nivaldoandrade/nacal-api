@@ -330,25 +330,11 @@ export class MealRepository {
             },
           },
         },
-        {
-          Update: {
-            TableName: this.config.db.dynamodb.rateLimitTable,
-            Key: RateLimitRepository.getCalendarMonthKey({
-              scope: 'account-monthly',
-              key: meal.accountId,
-              bucket: meal.quotaMonth,
-            }),
-            UpdateExpression: 'ADD #count :dec',
-            ConditionExpression: '#count > :zero',
-            ExpressionAttributeNames: {
-              '#count': 'count',
-            },
-            ExpressionAttributeValues: {
-              ':dec': -1,
-              ':zero': 0,
-            },
-          },
-        },
+        ...this.buildQuotaRefundItems({
+          accountId: meal.accountId,
+          quotaMonth: meal.quotaMonth,
+          quotaDay: meal.quotaDay,
+        }),
       ],
     });
 
@@ -364,7 +350,7 @@ export class MealRepository {
       }
 
       const mealConditionFailed = error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed';
-      const quotaConditionFailed = error.CancellationReasons?.[1]?.Code === 'ConditionalCheckFailed';
+      const quotaConditionFailed = MealRepository.hasQuotaConditionFailed(error);
 
       if (quotaConditionFailed) {
         const failed = await this.markFailed({
@@ -494,25 +480,11 @@ export class MealRepository {
             ExpressionAttributeValues: expressionAttributeValues,
           },
         },
-        {
-          Update: {
-            TableName: this.config.db.dynamodb.rateLimitTable,
-            Key: RateLimitRepository.getCalendarMonthKey({
-              scope: 'account-monthly',
-              key: meal.accountId,
-              bucket: meal.quotaMonth,
-            }),
-            UpdateExpression: 'ADD #count :dec',
-            ConditionExpression: '#count > :zero',
-            ExpressionAttributeNames: {
-              '#count': 'count',
-            },
-            ExpressionAttributeValues: {
-              ':dec': -1,
-              ':zero': 0,
-            },
-          },
-        },
+        ...this.buildQuotaRefundItems({
+          accountId: meal.accountId,
+          quotaMonth: meal.quotaMonth,
+          quotaDay: meal.quotaDay,
+        }),
       ],
     });
 
@@ -528,7 +500,7 @@ export class MealRepository {
       }
 
       const mealConditionFailed = error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed';
-      const quotaConditionFailed = error.CancellationReasons?.[1]?.Code === 'ConditionalCheckFailed';
+      const quotaConditionFailed = MealRepository.hasQuotaConditionFailed(error);
 
       if (quotaConditionFailed) {
         const rejected = await this.markRejected({
@@ -554,6 +526,33 @@ export class MealRepository {
 
       throw error;
     }
+  }
+
+  private buildQuotaRefundItems({
+    accountId,
+    quotaMonth,
+    quotaDay,
+  }: MealRepository.QuotaRefundParams): MealRepository.QuotaRefundItem[] {
+    const counters: RateLimitRepository.QuotaCounterKeyParams[] = [
+      { scope: 'account-monthly', key: accountId, bucket: quotaMonth },
+    ];
+
+    if (quotaDay) {
+      counters.push({ scope: 'account-daily', key: accountId, bucket: quotaDay });
+    }
+
+    return counters.map((counter) => ({
+      Update: {
+        TableName: this.config.db.dynamodb.rateLimitTable,
+        ...RateLimitRepository.buildQuotaCounterDecrement(counter),
+      },
+    }));
+  }
+
+  private static hasQuotaConditionFailed(error: TransactionCanceledException): boolean {
+    return (error.CancellationReasons ?? [])
+      .slice(1)
+      .some((reason) => reason.Code === 'ConditionalCheckFailed');
   }
 
   private static buildFailedUpdate({
@@ -779,6 +778,18 @@ namespace MealRepository {
 
   export type FailAndRefundParams = {
     meal: Meal;
+  }
+
+  export type QuotaRefundParams = {
+    accountId: string;
+    quotaMonth: string;
+    quotaDay: string | null;
+  }
+
+  export type QuotaRefundItem = {
+    Update: RateLimitRepository.QuotaCounterDecrement & {
+      TableName: string;
+    };
   }
 
   export type FailAndRefundResult = {

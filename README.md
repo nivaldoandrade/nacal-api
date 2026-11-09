@@ -26,7 +26,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas da fila (Dead Letter Queue);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
-- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro ilimitado; **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s) (`reservedConcurrency: 5` está temporariamente desligado até o aumento da cota de concorrência da conta de produção);
+- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s) (`reservedConcurrency: 5` está temporariamente desligado até o aumento da cota de concorrência da conta de produção);
 - **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
 
 ## Arquitetura
@@ -102,7 +102,7 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 
 ### 3. Refeição por texto (síncrona)
 Não passa por S3, SQS nem `processMeal`: `POST /meals/text` resolve tudo na própria request (Lambda com `timeout: 29`).
-1. Checa a cota do plano Free (`403 FREE_QUOTA_EXCEEDED` antes de chamar a IA);
+1. Checa a cota do plano antes de chamar a IA (Free: `403 FREE_QUOTA_EXCEEDED`; Pro: `429 DAILY_MEAL_LIMIT_REACHED`);
 2. Envia o texto ao GPT-5.4-mini (prompt `getTextMealPrompt`) dentro de `<user_note>`, com `<`/`>` neutralizados e tratado como dado. A IA devolve os alimentos e o `mealType` declarado; menções que não dizem qual alimento era ("alguma coisa no pote", "um pacotinho") vêm marcadas com `unidentifiedKind` e são removidas (log `[UNIDENTIFIED]`);
 3. Sem nenhum alimento, responde `422 NO_FOOD_IDENTIFIED` **sem consumir cota**;
 4. Consome a cota de forma atômica, calcula calorias, define `name`/`icon` e grava a refeição já em `SUCCESS` (`inputType: TEXT`, sem arquivo). Se a gravação falhar, a cota é estornada.
@@ -236,7 +236,7 @@ Gateway **Asaas** (sandbox: `api-sandbox.asaas.com`), atrás do contrato `IPayme
 ```text
 TRIAL (dia 0, sem gateway):
   POST /billing/trial ──► Subscription { status: TRIALING, trialEndsAt: +7d,
-      planId: PRO_MONTHLY }   (1 por conta · Pro imediato · cota ∞)
+      planId: PRO_MONTHLY }   (1 por conta · Pro imediato · 20/dia)
 
 CHECKOUT:
   POST /billing/checkout ──► Asaas Checkout ──► { checkoutUrl }
@@ -258,8 +258,23 @@ EXPIRAÇÃO (lazy, sem scheduler):
 - **Idempotência**: dedup por `event.id` na RateLimitTable (TTL 14d = retenção de reenvio do Asaas) + guards de transição (`paidUntil` só avança · `CHECKOUT_PAID` é no-op);
 - **Endurecimento da rota pública**: 3 camadas: allowlist dos **IPs oficiais do Asaas** (env `ASAAS_WEBHOOK_ALLOWED_IPS`; default = 4 IPs de produção, `*` desabilita em sandbox/dev; checada no adapter **antes** de tudo → `403`), token `asaas-access-token` (`502` se inválido), rate limit por IP 120/60s (`429` + `Retry-After`). O `reservedConcurrency: 5` (teto de custo/concorrência) está temporariamente removido de `sls/functions/billing.yml`: a conta nova de produção tem cota de concorrência baixa e o deploy falharia; volta quando a cota for aumentada;
 - **Join do webhook com a conta**: via `externalReference` (`"<accountId>#<planId>"`) e índice reverso `GATEWAY#<id>` na MainTable (testado com payload real pago no sandbox);
-- **Cota FREE**: `MealQuotaService` usa a RateLimitTable com bucket `YYYY-MM` — a 21ª refeição do mês responde `403 FREE_QUOTA_EXCEEDED`;
+- **Cotas**: Free 20/mês e Pro 20/dia, detalhadas em [Cotas de refeição](#cotas-de-refeição);
 - Trial é **1 por conta** (`409 TRIAL_NOT_AVAILABLE`); cancelar trial é downgrade local (sem gateway), assinatura paga cancela no gateway e mantém `PRO` até `paidUntil` + carência de 3 dias.
+
+### Cotas de refeição
+
+O `MealQuotaService` controla as cotas com contadores atômicos e condicionais na RateLimitTable (`PK = RL#account-monthly#<id>` e `RL#account-daily#<id>`). Foto, áudio e texto consomem 1 refeição; o "Adicionar item" não consome.
+
+| Plano | Limite | Contador (SK) | Ao estourar |
+|---|---|---|---|
+| Free | 20 refeições por mês (mês em UTC) | `YYYY-MM` | `403 FREE_QUOTA_EXCEEDED` |
+| Pro (pago ou trial) | 20 refeições por dia (dia em `America/Sao_Paulo`) | `YYYY-MM-DD` no diário + `YYYY-MM#PRO` no mensal, sem limite, só para estatística | `429 DAILY_MEAL_LIMIT_REACHED` |
+
+- O contador do Free conta só as refeições feitas no Free; as do Pro (trial ou pago) vão para `YYYY-MM#PRO`. Quem volta ao Free no meio do mês tem as 20 menos o que já usou no Free naquele mês: trial logo depois do cadastro → 20 cheias; usou as 20 do Free, fez o trial e voltou no mesmo mês → 0 até o mês seguinte. O mesmo vale para o Pro pago que cancela, deixa de pagar ou tem o anual vencido.
+- A refeição grava `quotaMonth` e `quotaDay` (este só no Pro). O estorno (`REJECTED`, `FAILED` ou falha ao gravar a refeição) devolve os dois contadores no bucket gravado, mesmo que aconteça no dia seguinte.
+- "Adicionar item": no Free sem cota do mês responde `403 FREE_QUOTA_EXCEEDED`; no Pro não é bloqueado pelo limite diário (já tem o teto de 5 adições por refeição e 20/h).
+- Os rate limits por hora ([Rate Limit](#rate-limit)) continuam valendo junto com as cotas.
+- `GET /me` devolve `mealQuota` (mensal) e `dailyMealQuota` (só Pro).
 
 ## Pré-requisitos
 
@@ -472,7 +487,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 | Método | Url         | Descrição                                        | Autenticação |
 | ------ | ----------- | ------------------------------------------------ | ------------ |
-| GET    | `/me`       | Retorna `isOnboarded`, perfil, metas, `subscription` e `mealQuota` do usuário (recria a conta se ela faltar após a confirmação) | JWT          |
+| GET    | `/me`       | Retorna `isOnboarded`, perfil, metas, `subscription`, `mealQuota` e `dailyMealQuota` do usuário (recria a conta se ela faltar após a confirmação) | JWT          |
 | PUT    | `/profiles` | Atualiza o perfil do usuário                     | JWT          |
 
 ### Refeições
@@ -720,11 +735,12 @@ com header `Retry-After` em segundos.
       "status": "TRIALING",
       "trialEndsAt": "2026-10-13T12:00:00.000Z"
     },
-    "mealQuota": { "used": 3, "limit": null, "remaining": null }
+    "mealQuota": { "used": 3, "limit": null, "remaining": null },
+    "dailyMealQuota": { "used": 1, "limit": 20, "remaining": 19 }
   }
   ```
 
-- `subscription` é `null` sem item de assinatura (plano FREE); `plan` é o **plano efetivo** derivado de `resolveEffectivePlan` (trial/pago vigente = `PRO`, vencido = `FREE`); `mealQuota.limit` é `20` no FREE e `null` (ilimitado) no PRO;
+- `subscription` é `null` sem item de assinatura (plano FREE); `plan` é o **plano efetivo** derivado de `resolveEffectivePlan` (trial/pago vigente = `PRO`, vencido = `FREE`); `mealQuota` é a cota do mês: no FREE, `limit` é `20`; no PRO, `used` conta as refeições Pro do mês e `limit`/`remaining` são `null`. `dailyMealQuota` é `null` no FREE e, no PRO, traz a cota do dia (`limit` 20, dia em `America/Sao_Paulo`);
 - Para um usuário que ainda não completou o onboarding, o endpoint responde `200` com `isOnboarded: false` e `profile`/`goal` como `null` — usado pelo frontend para decidir se encaminha o usuário ao onboarding.
 - O `accountId` é resolvido a partir do claim `internalId` do access token; se o token não tiver o claim, retorna `401`. Se a conta não existir, retorna `404`.
 
@@ -747,6 +763,7 @@ com header `Retry-After` em segundos.
 - `timeZone` é a zona IANA do dispositivo (ex.: `America/Sao_Paulo`, `Europe/Lisbon`), usada para nomear a refeição e definir em qual dia ela aparece; é opcional e cai em `America/Sao_Paulo` se ausente/inválida.
 - `description` é opcional e só aceita fotos (em áudio retorna `400`): texto livre de até 300 caracteres após `trim`; string vazia é tratada como ausente. Não aparece nas respostas de leitura da refeição.
 - `contentType` aceito: `image/jpeg` (até 10 MB), `audio/m4a` ou `audio/webm` (até 2 MB e 1–32s); `fileSize` é em bytes. A validação real do conteúdo acontece no processamento e um arquivo inválido vira `REJECTED`.
+- **Cota**: consome 1 refeição na criação (Free sem cota no mês: `403 FREE_QUOTA_EXCEEDED`; Pro com 20 refeições no dia: `429 DAILY_MEAL_LIMIT_REACHED`). A cota volta se a refeição terminar em `REJECTED` ou `FAILED`.
 
 - Resposta esperada:
   ```json
@@ -881,7 +898,7 @@ com header `Retry-After` em segundos.
 - `text` é obrigatório: 1 a 500 caracteres após `trim`. Fica salvo na refeição (em `description`) e não aparece nas respostas de leitura.
 - `timeZone` segue a mesma regra do `create-meal` (nome, ícone e dia da refeição; fallback `America/Sao_Paulo`). A refeição entra no dia e na hora do envio; "no almoço comi…" só ajusta o nome e o ícone via `mealType`.
 - A chamada à OpenAI é **síncrona** (GPT-5.4-mini, prompt `getTextMealPrompt`, Lambda com `timeout: 29`, ~1–2s). Ela tem timeout próprio de 12s com no máximo 1 retry (o mesmo vale para o `POST /meals/{id}/items`), então uma OpenAI lenta vira erro da própria Lambda antes do corte de 29s. O prompt reaproveita as regras do "Adicionar item" (nomes genéricos entram com versão típica, quantidade implausível é limitada, nomes só em português) e acrescenta: itens com macros zero (água, café preto, refrigerante zero) sempre entram, o que o usuário diz que **não** comeu fica de fora e "café" como bebida nunca vira café da manhã. O mesmo prompt analisa a transcrição dos áudios, numa variante que só troca a introdução.
-- **Cota**: consome 1 refeição do mês, como foto e áudio, mas só quando dá certo. Ordem: checagem da cota (`403` antes da IA, só para Free) → IA → `422` sem consumir → consumo atômico → gravação (estorno se a gravação falhar). Uma falha ou timeout durante a IA não deixa cota consumida.
+- **Cota**: consome 1 refeição (do mês no Free, do dia no Pro), como foto e áudio, mas só quando dá certo. Ordem: checagem da cota antes da IA (`403` no Free, `429 DAILY_MEAL_LIMIT_REACHED` no Pro) → IA → `422` sem consumir → consumo atômico → gravação (estorno se a gravação falhar). Uma falha ou timeout durante a IA não deixa cota consumida.
 - A refeição nasce `SUCCESS`, com `inputFileType: "TEXT"`, itens com `source: "INITIAL"` e `unidentified: null`; o `POST /meals/{id}/items` funciona nela como em qualquer refeição.
 
 - Resposta esperada (`201`):
@@ -916,6 +933,7 @@ com header `Retry-After` em segundos.
   | `400` | `VALIDATION` | `text` vazio ou acima de 500 caracteres |
   | `403` | `FREE_QUOTA_EXCEEDED` | Usuário Free sem cota restante no mês (checado antes da IA) |
   | `422` | `NO_FOOD_IDENTIFIED` | A IA não encontrou nenhum alimento no texto, ou só menções que não dizem o que era; a cota não é consumida |
+  | `429` | `DAILY_MEAL_LIMIT_REACHED` | Usuário Pro já registrou 20 refeições hoje (checado antes da IA) |
   | `429` | `RATE_LIMIT_EXCEEDED` | Mais de 10 chamadas na hora |
 
 #### Add Meal Items -> `/meals/{id}/items`
@@ -932,7 +950,7 @@ com header `Retry-After` em segundos.
 - `text` é obrigatório: 1 a 300 caracteres após `trim`.
 - A chamada à OpenAI é **síncrona** (GPT-5.4-mini, prompt `getAddItemsPrompt`, Lambda com `timeout: 29`). A IA recebe os itens já registrados em `<registered_items>` e o texto em `<user_note>` (com `<`/`>` neutralizados, tratados como dado) e devolve só os itens novos. Itens já registrados não são duplicados, exceto quando o usuário pede uma porção extra ("mais um arroz"), que entra como uma linha nova.
 - Calorias calculadas no backend (`carbs*4 + prot*4 + fat*9`); os itens novos entram com `source: "ADDED"`.
-- **Não consome cota**, mas responde `403 FREE_QUOTA_EXCEEDED` se o usuário Free já não tem cota no mês (checado antes da IA).
+- **Não consome cota**, mas responde `403 FREE_QUOTA_EXCEEDED` se o usuário Free já não tem cota no mês (checado antes da IA). O limite diário do Pro não bloqueia.
 - Limites: até **5 adições por refeição**, só **até 24h** depois de `createdAt` e no máximo **30 itens**. O append é condicional no DynamoDB (status, janela, adições e itens), então requests concorrentes não furam os limites. Itens que a IA devolveu e não couberam são descartados e contados em `skippedFoodsCount`.
 
 - Resposta esperada:
@@ -1055,15 +1073,15 @@ com header `Retry-After` em segundos.
         "price": 999,
         "cycle": "MONTHLY",
         "trialDays": 7,
-        "features": ["Refeições AI ilimitadas"]
+        "features": ["Até 20 refeições AI por dia"]
       },
       {
         "id": "PRO_YEARLY",
         "name": "Pro Anual",
-        "price": 9990,
+        "price": 8990,
         "cycle": "YEARLY",
         "trialDays": 7,
-        "features": ["Refeições AI ilimitadas"]
+        "features": ["Até 20 refeições AI por dia"]
       }
     ]
   }
@@ -1419,6 +1437,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 - Verifique o header `Retry-After` da resposta para saber quando tentar novamente;
 - Confirme qual escopo estourou (IP, email ou conta) na tabela `RateLimitTable` no DynamoDB (consulta por `PK = RL#<scope>#<chave>`);
 - Requests bloqueados **não** incrementam o contador — o limite é por janela fixa e recomeça ao expirar;
+- `DAILY_MEAL_LIMIT_REACHED` não é rate limit: é a cota diária do Pro (contador `RL#account-daily#<id>`, SK `YYYY-MM-DD`), que recomeça à meia-noite de Brasília;
 - Se precisar ajustar um limite, basta alterar o decorator `@RateLimit` no controller correspondente.
 
 ### Erro de CORS

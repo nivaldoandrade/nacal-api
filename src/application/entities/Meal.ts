@@ -48,6 +48,8 @@ export class Meal {
 
   quotaMonth: string | null;
 
+  quotaDay: string | null;
+
   quotaRefunded: boolean;
 
   leaseExpiresAt: number | null;
@@ -82,6 +84,7 @@ export class Meal {
     this.rejectionReason = attr.rejectionReason ?? null;
     this.gateScore = attr.gateScore ?? null;
     this.quotaMonth = attr.quotaMonth ?? null;
+    this.quotaDay = attr.quotaDay ?? null;
     this.quotaRefunded = attr.quotaRefunded ?? false;
     this.leaseExpiresAt = attr.leaseExpiresAt ?? null;
     this.itemAdditions = attr.itemAdditions ?? 0;
@@ -220,6 +223,7 @@ export namespace Meal {
     rejectionReason?: Meal.RejectionReason | null;
     gateScore?: number | null;
     quotaMonth?: string | null;
+    quotaDay?: string | null;
     quotaRefunded?: boolean;
     leaseExpiresAt?: number | null;
     itemAdditions?: number;

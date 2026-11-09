@@ -36,7 +36,7 @@ export class GetMeController extends Controller<'private'> {
         : null,
     );
 
-    const mealQuota = await this.mealQuotaService.getUsage({ accountId, plan });
+    const { mealQuota, dailyMealQuota } = await this.mealQuotaService.getUsage({ accountId, plan });
 
     return {
       statusCode: 200,
@@ -54,6 +54,7 @@ export class GetMeController extends Controller<'private'> {
           }
           : null,
         mealQuota,
+        dailyMealQuota,
       },
     };
   }
@@ -121,10 +122,7 @@ namespace GetMeController {
       trialEndsAt?: string;
       paidUntil?: string;
     } | null,
-    mealQuota: {
-      used: number;
-      limit: number | null;
-      remaining: number | null;
-    }
+    mealQuota: MealQuotaService.Quota;
+    dailyMealQuota: MealQuotaService.Quota | null;
   }
 }

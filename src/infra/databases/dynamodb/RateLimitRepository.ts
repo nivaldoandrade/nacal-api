@@ -4,6 +4,7 @@ import { GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { dynamodbClient } from '@infra/clients/dynamodbClient';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { getLocalDay } from '@shared/utils/timeZone';
 
 @Injectable()
 export class RateLimitRepository {
@@ -53,12 +54,16 @@ export class RateLimitRepository {
     }
   }
 
-  async incrementCalendarMonth({ scope, key, limit }: RateLimitRepository.CalendarMonthParams): Promise<RateLimitRepository.IncrementCalendarMonthResult> {
-    const { bucket, expiresAt } = RateLimitRepository.getCalendarMonthBucket();
-
+  async incrementQuotaCounter({
+    scope,
+    key,
+    bucket,
+    expiresAt,
+    limit,
+  }: RateLimitRepository.IncrementQuotaCounterParams): Promise<number | null> {
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.rateLimitTable,
-      Key: RateLimitRepository.getCalendarMonthKey({ scope, key, bucket }),
+      Key: RateLimitRepository.getQuotaCounterKey({ scope, key, bucket }),
       UpdateExpression: 'ADD #count :inc SET #expiresAt = :expiresAt',
       ...(limit !== undefined && {
         ConditionExpression: 'attribute_not_exists(#count) OR #count < :max',
@@ -77,16 +82,10 @@ export class RateLimitRepository {
 
     try {
       const { Attributes } = await dynamodbClient.send(command);
-      return {
-        used: (Attributes?.count as number) ?? null,
-        bucket,
-      };
+      return (Attributes?.count as number) ?? null;
     } catch (error) {
       if (error instanceof ConditionalCheckFailedException) {
-        return {
-          used: null,
-          bucket,
-        };
+        return null;
       }
 
       console.error(error);
@@ -94,19 +93,10 @@ export class RateLimitRepository {
     }
   }
 
-  async decrementCalendarMonth({ scope, key, bucket }: RateLimitRepository.DecrementCalendarMonthParams): Promise<boolean> {
+  async decrementQuotaCounter(params: RateLimitRepository.QuotaCounterKeyParams): Promise<boolean> {
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.rateLimitTable,
-      Key: RateLimitRepository.getCalendarMonthKey({ scope, key, bucket }),
-      UpdateExpression: 'ADD #count :dec',
-      ConditionExpression: '#count > :zero',
-      ExpressionAttributeNames: {
-        '#count': 'count',
-      },
-      ExpressionAttributeValues: {
-        ':dec': -1,
-        ':zero': 0,
-      },
+      ...RateLimitRepository.buildQuotaCounterDecrement(params),
       ReturnValues: 'UPDATED_NEW',
     });
 
@@ -122,30 +112,48 @@ export class RateLimitRepository {
     }
   }
 
-  async getCountCalendarMonth({ scope, key }: RateLimitRepository.CalendarMonthParams): Promise<number> {
-    const { bucket } = RateLimitRepository.getCalendarMonthBucket();
-
+  async getQuotaCount({ scope, key, bucket }: RateLimitRepository.QuotaCounterKeyParams): Promise<number> {
     const command = new GetCommand({
       TableName: this.config.db.dynamodb.rateLimitTable,
-      Key: RateLimitRepository.getCalendarMonthKey({ scope, key, bucket }),
+      Key: RateLimitRepository.getQuotaCounterKey({ scope, key, bucket }),
     });
 
     const { Item } = await dynamodbClient.send(command);
     return (Item?.count as number) ?? 0;
   }
 
-  static getCalendarMonthBucket(): { bucket: string; expiresAt: number } {
-    const now = new Date();
+  static getCalendarMonthBucket(now: Date = new Date()): RateLimitRepository.QuotaBucket {
     const bucket = now.toISOString().slice(0, 7);
     const startNextMonth = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
     const expiresAt = Math.floor(startNextMonth / 1000) + 7 * 86_400;
     return { bucket, expiresAt };
   }
 
-  static getCalendarMonthKey({ scope, key, bucket }: RateLimitRepository.CalendarMonthKeyParams): RateLimitRepository.CalendarMonthKey {
+  static getCalendarDayBucket(now: Date, timeZone: string): RateLimitRepository.QuotaBucket {
+    const bucket = getLocalDay(now, timeZone);
+    const expiresAt = Math.floor(now.getTime() / 1000) + 15 * 86_400;
+    return { bucket, expiresAt };
+  }
+
+  static getQuotaCounterKey({ scope, key, bucket }: RateLimitRepository.QuotaCounterKeyParams): RateLimitRepository.QuotaCounterKey {
     return {
       PK: `RL#${scope}#${key}`,
       SK: bucket,
+    };
+  }
+
+  static buildQuotaCounterDecrement(params: RateLimitRepository.QuotaCounterKeyParams): RateLimitRepository.QuotaCounterDecrement {
+    return {
+      Key: RateLimitRepository.getQuotaCounterKey(params),
+      UpdateExpression: 'ADD #count :dec',
+      ConditionExpression: '#count > :zero',
+      ExpressionAttributeNames: {
+        '#count': 'count',
+      },
+      ExpressionAttributeValues: {
+        ':dec': -1,
+        ':zero': 0,
+      },
     };
   }
 
@@ -187,32 +195,35 @@ export namespace RateLimitRepository {
     limit: number;
   }
 
-  export type CalendarMonthParams = {
-    scope: 'account-monthly';
+  export type QuotaScope = 'account-monthly' | 'account-daily';
+
+  export type QuotaCounterKeyParams = {
+    scope: QuotaScope;
     key: string;
+    bucket: string;
+  };
+
+  export type IncrementQuotaCounterParams = QuotaCounterKeyParams & {
+    expiresAt: number;
     limit?: number;
   };
 
-  export type DecrementCalendarMonthParams = {
-    scope: 'account-monthly';
-    key: string;
+  export type QuotaBucket = {
     bucket: string;
+    expiresAt: number;
   };
 
-  export type IncrementCalendarMonthResult = {
-    used: number | null;
-    bucket: string;
-  };
-
-  export type CalendarMonthKeyParams = {
-    scope: 'account-monthly';
-    key: string;
-    bucket: string;
-  };
-
-  export type CalendarMonthKey = {
+  export type QuotaCounterKey = {
     PK: `RL#${string}#${string}`;
     SK: string;
+  };
+
+  export type QuotaCounterDecrement = {
+    Key: QuotaCounterKey;
+    UpdateExpression: string;
+    ConditionExpression: string;
+    ExpressionAttributeNames: Record<string, string>;
+    ExpressionAttributeValues: Record<string, number>;
   };
 
   export type WebhookEventParams = {

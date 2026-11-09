@@ -79,7 +79,7 @@ export class AddMealItemsUseCase {
     const subscription = await this.subscriptionRepository.findByAccountId(accountId);
     const plan = Subscription.resolveEffectivePlan(subscription);
 
-    await this.mealQuotaService.ensureAvailable({ accountId, plan });
+    await this.mealQuotaService.ensureCanAddItems({ accountId, plan });
   }
 
   private async resolveAppendFailure({

@@ -25,7 +25,7 @@ export class CreateTextMealUseCase {
     const subscription = await this.subscriptionRepository.findByAccountId(accountId);
     const plan = Subscription.resolveEffectivePlan(subscription);
 
-    await this.mealQuotaService.ensureAvailable({ accountId, plan });
+    await this.mealQuotaService.ensureCanCreateMeal({ accountId, plan });
 
     const mealId = generateUniqueId();
     const createdAt = new Date();
@@ -43,7 +43,7 @@ export class CreateTextMealUseCase {
       throw new NoFoodIdentified();
     }
 
-    const { quotaMonth } = await this.mealQuotaService.consume({ accountId, plan });
+    const { quotaMonth, quotaDay } = await this.mealQuotaService.consume({ accountId, plan });
 
     const meal = new Meal({
       id: mealId,
@@ -55,6 +55,7 @@ export class CreateTextMealUseCase {
       description: text,
       foods: mealFoods,
       quotaMonth,
+      quotaDay,
       createdAt,
     });
 
@@ -66,7 +67,7 @@ export class CreateTextMealUseCase {
     try {
       await this.mealRepository.create(meal);
     } catch (error) {
-      await this.refundQuota({ accountId, quotaMonth, error });
+      await this.refundQuota({ accountId, quotaMonth, quotaDay, error });
 
       throw error;
     }
@@ -80,10 +81,11 @@ export class CreateTextMealUseCase {
   private async refundQuota({
     accountId,
     quotaMonth,
+    quotaDay,
     error,
   }: CreateTextMealUseCase.RefundQuotaParams): Promise<void> {
     try {
-      await this.mealQuotaService.refund({ accountId, quotaMonth });
+      await this.mealQuotaService.refund({ accountId, quotaMonth, quotaDay });
     } catch (refundError) {
       throw new AggregateError(
         [error, refundError],
@@ -109,6 +111,7 @@ export namespace CreateTextMealUseCase {
   export type RefundQuotaParams = {
     accountId: string;
     quotaMonth: string;
+    quotaDay: string | null;
     error: unknown;
   }
 }
