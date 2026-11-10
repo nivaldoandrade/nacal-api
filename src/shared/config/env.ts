@@ -15,6 +15,7 @@ export const envSchema = z.object({
   ASAAS_API_KEY: z.string().check(z.trim(), z.minLength(1)),
   ASAAS_WEBHOOK_TOKEN: z.string().check(z.trim(), z.minLength(1)),
   ASAAS_WEBHOOK_ALLOWED_IPS: z.optional(z.string()),
+  ALERT_TOPIC_ARN: z.optional(z.string()),
   APP_WEB_URL: z.string().check(z.trim(), z.minLength(1)),
   CLOUDFLARE_ACCOUNT_ID: z.optional(z.string()),
   CLOUDFLARE_AI_API_TOKEN: z.optional(z.string()),

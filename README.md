@@ -27,7 +27,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
 - **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues) e quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
-- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s) (`reservedConcurrency: 5` está temporariamente desligado até o aumento da cota de concorrência da conta de produção);
+- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade, reconciliação horária dos pagamentos confirmados (ativa o que o webhook não ativou e avisa por e-mail) e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s) (`reservedConcurrency: 5` está temporariamente desligado até o aumento da cota de concorrência da conta de produção);
 - **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
 
 ## Arquitetura
@@ -256,6 +256,13 @@ WEBHOOK (fonte da verdade):
       PAYMENT_CONFIRMED / RECEIVED ──► status ACTIVE + paidUntil (+ciclo) ──►
       app invalida ['accounts'] e reflete via GET /me
 
+RECONCILIAÇÃO (rede de segurança do webhook, a cada 1h em prod):
+  EventBridge ──► Lambda reconcilePayments ──► GET /v3/payments
+      (status CONFIRMED e RECEIVED, vencimento nos últimos 35 dias) ──►
+      mesmo join e mesma ativação do webhook (WebhookUseCase.applyEvent) ──►
+      ativa só o pagamento que ainda não está coberto pelo paidUntil ──►
+      e-mail (SNS) se ativou algo, achou pagamento sem conta ou falhou
+
 EXPIRAÇÃO (lazy, sem scheduler):
   resolveEffectivePlan: trial/pago vencido ──► FREE + cota 20/mês
 ```
@@ -264,6 +271,7 @@ EXPIRAÇÃO (lazy, sem scheduler):
 - **Idempotência**: dedup por `event.id` na RateLimitTable (TTL 14d = retenção de reenvio do Asaas) + guards de transição (`paidUntil` só avança · `CHECKOUT_PAID` é no-op);
 - **Endurecimento da rota pública**: 3 camadas: allowlist dos **IPs oficiais do Asaas** (env `ASAAS_WEBHOOK_ALLOWED_IPS`; default = 4 IPs de produção, `*` desabilita em sandbox/dev; checada no adapter **antes** de tudo → `403`), token `asaas-access-token` (`502` se inválido), rate limit por IP 120/60s (`429` + `Retry-After`). O `reservedConcurrency: 5` (teto de custo/concorrência) está temporariamente removido de `sls/functions/billing.yml`: a conta nova de produção tem cota de concorrência baixa e o deploy falharia; volta quando a cota for aumentada;
 - **Join do webhook com a conta**: via `externalReference` (`"<accountId>#<planId>"`) e índice reverso `GATEWAY#<id>` na MainTable (testado com payload real pago no sandbox);
+- **Reconciliação**: a Lambda `reconcilePayments` lista no Asaas os pagamentos `CONFIRMED`/`RECEIVED` com vencimento nos últimos 35 dias e aplica cada um pelo `WebhookUseCase.applyEvent`. Um pagamento é pulado quando a assinatura já tem `paidUntil >= vencimento + ciclo` (por isso quem pagou e cancelou não é reativado). Cada pagamento conferido ganha um marcador de 45 dias (janela + 10) na RateLimitTable (`RL#webhook-event#reconcile-payment#<payId>`) e não é relido. Quando ativa algo, acha um pagamento pago sem conta correspondente ou falha, publica um e-mail no `DQLAlarmTopic` (env `ALERT_TOPIC_ARN`, injetada pelo Serverless), e o alarme `ReconcilePaymentsErrorsAlarm` (métrica `Errors` da Lambda, ações só em prod) cobre a execução que morre antes de avisar (timeout, erro ao iniciar, falha do SNS). O agendamento (`rate(1 hour)`) só fica ligado no stage `prod` (param `reconcileScheduleEnabled` no `serverless.yml`); em dev roda sob demanda: `npx serverless invoke -f reconcilePayments` (aceita `--data '{"lookbackDays":45}'` para uma janela maior, útil também depois de uma falha longa do webhook). Fora do escopo: `PAYMENT_OVERDUE` e cancelamentos perdidos;
 - **Cotas**: Free 20/mês e Pro 20/dia, detalhadas em [Cotas de refeição](#cotas-de-refeição);
 - Trial é **1 por conta** (`409 TRIAL_NOT_AVAILABLE`); cancelar trial é downgrade local (sem gateway), assinatura paga cancela no gateway e mantém `PRO` até `paidUntil` + carência de 3 dias.
 
@@ -452,6 +460,7 @@ functions:
   newMealUploadedTrigger: nacal-api-dev-newMealUploadedTrigger
   processMeal: nacal-api-dev-processMeal
   checkMealUpload: nacal-api-dev-checkMealUpload
+  reconcilePayments: nacal-api-dev-reconcilePayments
 ```
 
 O endpoint base da API será: `https://xxx.execute-api.sa-east-1.amazonaws.com`
@@ -1251,6 +1260,10 @@ com header `Retry-After` em segundos.
 - **MealsDLQ**: Dead Letter Queue com alarme por email (SNS)
 - **MealUploadCheckQueue**: Fila da checagem de refeição presa (atraso de 15 min por mensagem)
 - **MealUploadCheckDLQ**: Dead Letter Queue da checagem, com alarme por email (SNS)
+
+### EventBridge
+
+- **Regra agendada** (`rate(1 hour)`) que dispara a Lambda `reconcilePayments` (reconciliação de pagamentos do Asaas); ligada só no stage `prod`, com alarme de erros da Lambda por email (SNS)
 
 ### API Gateway
 

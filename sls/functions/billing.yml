@@ -36,3 +36,11 @@ webhookAsaas:
     - httpApi:
         path: /billing/webhooks/asaas
         method: post
+reconcilePayments:
+  handler: src/main/functions/billing/reconcilePayments.handler
+  timeout: 60
+  maximumRetryAttempts: 0
+  events:
+    - schedule:
+        rate: rate(1 hour)
+        enabled: ${param:reconcileScheduleEnabled}

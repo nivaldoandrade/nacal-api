@@ -37,6 +37,10 @@ statements:
       - !Sub ${MealsBucket.Arn}/*
   - Effect: Allow
     Action:
+      - sns:Publish
+    Resource: !Ref DQLAlarmTopic
+  - Effect: Allow
+    Action:
       - sqs:SendMessage
     Resource:
       - !GetAtt MealsQueue.Arn

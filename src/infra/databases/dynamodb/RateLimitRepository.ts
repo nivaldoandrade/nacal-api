@@ -170,8 +170,8 @@ export class RateLimitRepository {
     return Boolean(Item);
   }
 
-  async markWebhookEvent({ scope, key }: RateLimitRepository.WebhookEventParams): Promise<void> {
-    const expiresAt = Math.floor(Date.now() / 1000) + 14 * 86_400;
+  async markWebhookEvent({ scope, key, ttlDays = 14 }: RateLimitRepository.MarkWebhookEventParams): Promise<void> {
+    const expiresAt = Math.floor(Date.now() / 1000) + ttlDays * 86_400;
 
     const command = new PutCommand({
       TableName: this.config.db.dynamodb.rateLimitTable,
@@ -229,6 +229,10 @@ export namespace RateLimitRepository {
   export type WebhookEventParams = {
     scope: 'webhook-event';
     key: string;
+  };
+
+  export type MarkWebhookEventParams = WebhookEventParams & {
+    ttlDays?: number;
   };
 
   export const WEBHOOK_EVENT_SK = 'EVENT';

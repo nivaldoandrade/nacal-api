@@ -24,6 +24,8 @@ export class AppConfig {
 
   readonly aiGate: AppConfig.AiGate;
 
+  readonly alerts: AppConfig.Alerts;
+
   constructor() {
     this.envAuth = {
       cognito: {
@@ -62,6 +64,10 @@ export class AppConfig {
         webhookAllowedIps: parseAsaasWebhookAllowedIps(env.ASAAS_WEBHOOK_ALLOWED_IPS),
       },
       appWebUrl: env.APP_WEB_URL,
+    };
+
+    this.alerts = {
+      topicArn: env.ALERT_TOPIC_ARN?.trim() || undefined,
     };
 
     this.aiGate = {
@@ -166,6 +172,10 @@ namespace AppConfig {
       webhookAllowedIps: string[];
     },
     appWebUrl: string;
+  }
+
+  export type Alerts = {
+    topicArn?: string;
   }
 
   export type AiGate = {

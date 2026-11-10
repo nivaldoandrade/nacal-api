@@ -3,6 +3,14 @@ org: nivaldoandrade
 # "service" is the name of this project. This will also be added to your AWS resource names.
 service: nacal-api
 
+stages:
+  default:
+    params:
+      reconcileScheduleEnabled: false
+  prod:
+    params:
+      reconcileScheduleEnabled: true
+
 custom:
   cognito:
     UserPoolName: ${self:service}-${sls:stage}-UserPool
@@ -52,6 +60,7 @@ resources:
   - ${file(./sls/resources/MealsQueue.yml)}
   - ${file(./sls/resources/mealUploadCheckQueue.yml)}
   - ${file(./sls/resources/DLQAlarmTopic.yml)}
+  - ${file(./sls/resources/reconcilePaymentsAlarm.yml)}
   - ${file(./sls/resources/rateLimitTable.yml)}
 
 functions:

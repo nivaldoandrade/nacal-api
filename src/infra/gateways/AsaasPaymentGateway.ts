@@ -75,6 +75,47 @@ export class AsaasPaymentGateway extends IPaymentGateway {
     await this.request(`/v3/subscriptions/${subscriptionRef}`, { method: 'DELETE' });
   }
 
+  async listPaidPayments({ dueDateFrom }: IPaymentGateway.ListPaidPaymentsInput): Promise<IPaymentGateway.PaidPayment[]> {
+    const limit = 100;
+    const payments: IPaymentGateway.PaidPayment[] = [];
+
+    for (const status of ['CONFIRMED', 'RECEIVED']) {
+      let offset = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const query = new URLSearchParams({
+          status,
+          'dueDate[ge]': dueDateFrom,
+          offset: String(offset),
+          limit: String(limit),
+        });
+
+        const response = await this.request<AsaasPaymentGateway.ListPaymentsResponse>(`/v3/payments?${query}`);
+
+        for (const payment of response.data) {
+          if (payment.deleted) {
+            continue;
+          }
+
+          payments.push({
+            paymentId: payment.id,
+            subscriptionRef: payment.subscription ?? undefined,
+            checkoutSession: payment.checkoutSession ?? undefined,
+            externalReference: payment.externalReference ?? undefined,
+            dueDate: payment.dueDate,
+            amount: payment.value,
+          });
+        }
+
+        hasMore = response.hasMore;
+        offset += limit;
+      }
+    }
+
+    return payments;
+  }
+
   async parseWebhook(headers: Record<string, string | undefined>, rawBody: string): Promise<IPaymentGateway.BillingEvent | null> {
     if (headers['asaas-access-token'] !== this.config.billing.asaas.webhookToken) {
       throw new BillingError('Invalid webhook token.');
@@ -162,6 +203,19 @@ export namespace AsaasPaymentGateway {
   export type CancelSubscriptionParams = {
     subscriptionRef: string;
   }
+
+  export type ListPaymentsResponse = {
+    hasMore: boolean;
+    data: Array<{
+      id: string;
+      dueDate: string;
+      value: number;
+      deleted?: boolean;
+      subscription?: string | null;
+      checkoutSession?: string | null;
+      externalReference?: string | null;
+    }>;
+  };
 
   export type WebhookPayload = {
     id: string;

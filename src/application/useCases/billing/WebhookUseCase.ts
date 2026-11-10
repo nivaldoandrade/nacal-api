@@ -21,10 +21,19 @@ export class WebhookUseCase {
       return { handled: false };
     }
 
+    const { handled } = await this.applyEvent(event);
+
+    return { handled };
+  }
+
+  async applyEvent(
+    event: IPaymentGateway.BillingEvent,
+    { skipCoveredPayment = false, eventTtlDays }: WebhookUseCase.ApplyEventOptions = {},
+  ): Promise<WebhookUseCase.ApplyEventOutput> {
     const { eventId } = event;
 
     if (eventId && await this.rateLimitRepository.hasWebhookEvent({ scope: 'webhook-event', key: eventId })) {
-      return { handled: true };
+      return { handled: true, applied: false };
     }
 
     const subscriptionRef = 'subscriptionRef' in event ? event.subscriptionRef : undefined;
@@ -43,7 +52,7 @@ export class WebhookUseCase {
     const plan = planId ? Subscription.Plan[planId] : undefined;
 
     if (!accountId || !plan) {
-      return { handled: false };
+      return { handled: false, applied: false };
     }
 
     if (subscriptionRef) {
@@ -56,9 +65,15 @@ export class WebhookUseCase {
 
     const existing = await this.subscriptionRepository.findByAccountId(accountId);
     const now = new Date();
+    let applied = true;
 
     switch (event.type) {
       case 'PAYMENT_SUCCEEDED':
+        if (skipCoveredPayment && this.isPaymentCovered(existing, event.dueDate, plan)) {
+          applied = false;
+          break;
+        }
+
         await this.applyPaymentSucceeded({
           accountId,
           dueDate: event.dueDate,
@@ -89,10 +104,18 @@ export class WebhookUseCase {
     }
 
     if (eventId) {
-      await this.rateLimitRepository.markWebhookEvent({ scope: 'webhook-event', key: eventId });
+      await this.rateLimitRepository.markWebhookEvent({ scope: 'webhook-event', key: eventId, ttlDays: eventTtlDays });
     }
 
-    return { handled: true };
+    return { handled: true, applied, accountId };
+  }
+
+  private isPaymentCovered(
+    existing: Subscription | null,
+    dueDate: string,
+    plan: WebhookUseCase.Plan,
+  ): boolean {
+    return Boolean(existing?.paidUntil && existing.paidUntil >= this.addCycle(dueDate, plan));
   }
 
   private async applyPaymentSucceeded({
@@ -169,7 +192,7 @@ export class WebhookUseCase {
   }
 }
 
-namespace WebhookUseCase {
+export namespace WebhookUseCase {
   export type Input = {
     headers: Record<string, string | undefined>;
     rawBody: string;
@@ -177,6 +200,17 @@ namespace WebhookUseCase {
 
   export type Output = {
     handled: boolean;
+  };
+
+  export type ApplyEventOptions = {
+    skipCoveredPayment?: boolean;
+    eventTtlDays?: number;
+  };
+
+  export type ApplyEventOutput = {
+    handled: boolean;
+    applied: boolean;
+    accountId?: string;
   };
 
   export type Plan = (typeof Subscription.Plan)[Subscription.PlanIdType];
