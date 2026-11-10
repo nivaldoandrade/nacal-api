@@ -28,7 +28,7 @@ export class WebhookUseCase {
 
   async applyEvent(
     event: IPaymentGateway.BillingEvent,
-    { skipCoveredPayment = false, keepCanceledSubscription = false, eventTtlDays }: WebhookUseCase.ApplyEventOptions = {},
+    { skipCoveredPayment = false, eventTtlDays }: WebhookUseCase.ApplyEventOptions = {},
   ): Promise<WebhookUseCase.ApplyEventOutput> {
     const { eventId } = event;
 
@@ -74,7 +74,7 @@ export class WebhookUseCase {
           break;
         }
 
-        if (keepCanceledSubscription && existing && this.isCanceledGatewaySubscription(existing, subscriptionRef)) {
+        if (existing && this.isCanceledGatewaySubscription(existing, subscriptionRef)) {
           await this.extendPaidUntil(existing, this.addCycle(event.dueDate, plan));
           break;
         }
@@ -172,23 +172,25 @@ export class WebhookUseCase {
           throw error;
         }
 
-        this.mergePaymentSucceeded(winner, cyclePaidUntil, subscriptionRef);
+        this.mergePaymentSucceeded(winner, cyclePaidUntil, plan, subscriptionRef);
         await this.subscriptionRepository.save(winner);
       }
 
       return;
     }
 
-    this.mergePaymentSucceeded(existing, cyclePaidUntil, subscriptionRef);
+    this.mergePaymentSucceeded(existing, cyclePaidUntil, plan, subscriptionRef);
     await this.subscriptionRepository.save(existing);
   }
 
   private mergePaymentSucceeded(
     subscription: Subscription,
     cyclePaidUntil: Date,
+    plan: WebhookUseCase.Plan,
     subscriptionRef?: string,
   ): void {
     subscription.status = Subscription.Status.ACTIVE;
+    subscription.planId = plan.id;
 
     if (!subscription.paidUntil || cyclePaidUntil > subscription.paidUntil) {
       subscription.paidUntil = cyclePaidUntil;
@@ -224,7 +226,6 @@ export namespace WebhookUseCase {
 
   export type ApplyEventOptions = {
     skipCoveredPayment?: boolean;
-    keepCanceledSubscription?: boolean;
     eventTtlDays?: number;
   };
 

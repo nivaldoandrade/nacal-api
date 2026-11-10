@@ -81,7 +81,7 @@ export class ReconcilePaymentsUseCase {
       checkoutSession: payment.checkoutSession,
       dueDate: payment.dueDate,
       amount: payment.amount,
-    }, { skipCoveredPayment: true, keepCanceledSubscription: true, eventTtlDays: markerTtlDays });
+    }, { skipCoveredPayment: true, eventTtlDays: markerTtlDays });
 
     if (!handled) {
       await this.rateLimitRepository.markWebhookEvent({ scope: 'webhook-event', key: eventId, ttlDays: markerTtlDays });
