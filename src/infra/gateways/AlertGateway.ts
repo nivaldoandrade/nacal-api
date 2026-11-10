@@ -20,7 +20,7 @@ export class AlertGateway {
 
     const command = new PublishCommand({
       TopicArn: topicArn,
-      Subject: subject.slice(0, 100),
+      Subject: subject.slice(0, 99),
       Message: message,
     });
 

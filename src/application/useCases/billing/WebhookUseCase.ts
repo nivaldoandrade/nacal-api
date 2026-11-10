@@ -28,7 +28,7 @@ export class WebhookUseCase {
 
   async applyEvent(
     event: IPaymentGateway.BillingEvent,
-    { skipCoveredPayment = false, eventTtlDays }: WebhookUseCase.ApplyEventOptions = {},
+    { skipCoveredPayment = false, keepCanceledSubscription = false, eventTtlDays }: WebhookUseCase.ApplyEventOptions = {},
   ): Promise<WebhookUseCase.ApplyEventOutput> {
     const { eventId } = event;
 
@@ -74,6 +74,11 @@ export class WebhookUseCase {
           break;
         }
 
+        if (keepCanceledSubscription && existing && this.isCanceledGatewaySubscription(existing, subscriptionRef)) {
+          await this.extendPaidUntil(existing, this.addCycle(event.dueDate, plan));
+          break;
+        }
+
         await this.applyPaymentSucceeded({
           accountId,
           dueDate: event.dueDate,
@@ -116,6 +121,21 @@ export class WebhookUseCase {
     plan: WebhookUseCase.Plan,
   ): boolean {
     return Boolean(existing?.paidUntil && existing.paidUntil >= this.addCycle(dueDate, plan));
+  }
+
+  private isCanceledGatewaySubscription(existing: Subscription, subscriptionRef?: string): boolean {
+    return existing.status === Subscription.Status.CANCELED
+      && Boolean(subscriptionRef)
+      && existing.gatewayRefs?.subscriptionId === subscriptionRef;
+  }
+
+  private async extendPaidUntil(subscription: Subscription, cyclePaidUntil: Date): Promise<void> {
+    if (subscription.paidUntil && cyclePaidUntil <= subscription.paidUntil) {
+      return;
+    }
+
+    subscription.paidUntil = cyclePaidUntil;
+    await this.subscriptionRepository.save(subscription);
   }
 
   private async applyPaymentSucceeded({
@@ -204,6 +224,7 @@ export namespace WebhookUseCase {
 
   export type ApplyEventOptions = {
     skipCoveredPayment?: boolean;
+    keepCanceledSubscription?: boolean;
     eventTtlDays?: number;
   };
 

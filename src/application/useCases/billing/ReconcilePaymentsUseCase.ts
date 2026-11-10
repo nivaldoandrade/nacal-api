@@ -8,6 +8,8 @@ import { Injectable } from '@kernel/decorators/Injectable';
 export class ReconcilePaymentsUseCase {
   static readonly DEFAULT_LOOKBACK_DAYS = 35;
 
+  static readonly MAX_LOOKBACK_DAYS = 365;
+
   static readonly MARKER_TTL_MARGIN_DAYS = 10;
 
   constructor(
@@ -23,18 +25,8 @@ export class ReconcilePaymentsUseCase {
     const markerTtlDays = lookbackDays + ReconcilePaymentsUseCase.MARKER_TTL_MARGIN_DAYS;
     const dueDateFrom = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
 
-    let payments: IPaymentGateway.PaidPayment[];
-
-    try {
-      payments = await this.paymentGateway.listPaidPayments({ dueDateFrom });
-    } catch (error) {
-      await this.alert('reconciliação de pagamentos falhou', [
-        `Não foi possível listar os pagamentos do gateway (vencimento a partir de ${dueDateFrom}).`,
-        `Erro: ${this.describeError(error)}`,
-      ]);
-
-      throw error;
-    }
+    const payments = await this.paymentGateway.listPaidPayments({ dueDateFrom });
+    payments.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
     const output: ReconcilePaymentsUseCase.Output = {
       dueDateFrom,
@@ -89,7 +81,7 @@ export class ReconcilePaymentsUseCase {
       checkoutSession: payment.checkoutSession,
       dueDate: payment.dueDate,
       amount: payment.amount,
-    }, { skipCoveredPayment: true, eventTtlDays: markerTtlDays });
+    }, { skipCoveredPayment: true, keepCanceledSubscription: true, eventTtlDays: markerTtlDays });
 
     if (!handled) {
       await this.rateLimitRepository.markWebhookEvent({ scope: 'webhook-event', key: eventId, ttlDays: markerTtlDays });
@@ -104,15 +96,10 @@ export class ReconcilePaymentsUseCase {
   }
 
   private async alert(subject: string, lines: string[]): Promise<void> {
-    try {
-      await this.alertGateway.publish({
-        subject: `NaCal: ${subject}`,
-        message: lines.join('\n'),
-      });
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error(error);
-    }
+    await this.alertGateway.publish({
+      subject: `NaCal: ${subject}`,
+      message: lines.join('\n'),
+    });
   }
 
   private describeError(error: unknown): string {
