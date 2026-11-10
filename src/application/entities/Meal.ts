@@ -18,6 +18,8 @@ export class Meal {
 
   public static readonly EDIT_WINDOW_HOURS: number = 24;
 
+  public static readonly UPLOAD_CHECK_DELAY_SECONDS: number = 900;
+
   readonly id: string;
 
   readonly accountId: string;

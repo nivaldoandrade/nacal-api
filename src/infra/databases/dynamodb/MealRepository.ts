@@ -284,7 +284,7 @@ export class MealRepository {
   }
 
   async failAndRefund({ meal }: MealRepository.FailAndRefundParams): Promise<MealRepository.FailAndRefundResult> {
-    if (meal.status !== Meal.StatusType.PROCESSING && meal.status !== Meal.StatusType.QUEUED) {
+    if (!MealRepository.failableStatuses.includes(meal.status)) {
       return {
         failed: false,
         refunded: false,
@@ -309,7 +309,7 @@ export class MealRepository {
     const failedCondition = MealRepository.buildFailedCondition(meal);
 
     const command = new TransactWriteCommand({
-      ClientRequestToken: `${meal.id}#fail#${meal.attempts}`,
+      ClientRequestToken: MealRepository.buildFailRequestToken(meal),
       TransactItems: [
         {
           Update: {
@@ -573,6 +573,18 @@ export class MealRepository {
   }
 
   private static buildFailedCondition(meal: Meal): MealRepository.FailedCondition {
+    if (meal.status === Meal.StatusType.UPLOADING) {
+      return {
+        conditionExpression: '#status = :uploading',
+        expressionAttributeNames: {
+          '#status': 'status',
+        },
+        expressionAttributeValues: {
+          ':uploading': Meal.StatusType.UPLOADING,
+        },
+      };
+    }
+
     const expressionAttributeNames: Record<string, string> = {
       '#status': 'status',
       '#attempts': 'attempts',
@@ -660,6 +672,20 @@ export class MealRepository {
       throw error;
     }
   }
+
+  private static buildFailRequestToken(meal: Meal): string {
+    if (meal.status === Meal.StatusType.UPLOADING) {
+      return `${meal.id}#upload`;
+    }
+
+    return `${meal.id}#fail#${meal.attempts}`;
+  }
+
+  private static readonly failableStatuses: Meal.StatusType[] = [
+    Meal.StatusType.UPLOADING,
+    Meal.StatusType.QUEUED,
+    Meal.StatusType.PROCESSING,
+  ];
 
   private static getKey({ accountId, mealId }: MealRepository.KeyParams): MealRepository.Key {
     return {

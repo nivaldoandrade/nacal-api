@@ -4,6 +4,7 @@ import { MealQuotaService } from '@application/services/MealQuotaService';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { SubscriptionRepository } from '@infra/databases/dynamodb/SubscriptionRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
+import { MealUploadCheckQueueGateway } from '@infra/gateways/MealUploadCheckQueueGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { generateUniqueId } from '@shared/utils/generateUniqueId';
 
@@ -15,6 +16,7 @@ export class CreateMealUseCase {
     private readonly mealStorageGateway: MealFileStorageGateway,
     private readonly subscriptionRepository: SubscriptionRepository,
     private readonly mealQuotaService: MealQuotaService,
+    private readonly mealUploadCheckQueueGateway: MealUploadCheckQueueGateway,
   ) { }
 
   async execute({ accountId, timeZone, description, file }: CreateMealUseCase.Input): Promise<CreateMealUseCase.Output> {
@@ -50,6 +52,8 @@ export class CreateMealUseCase {
         mimeType: file.mimeType,
         fileSize: file.size,
       });
+
+      await this.mealUploadCheckQueueGateway.publish({ accountId, mealId });
 
       await this.mealRepository.create(meal);
 

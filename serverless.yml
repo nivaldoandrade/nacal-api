@@ -50,6 +50,7 @@ resources:
   - ${file(./sls/resources/mealsBucket.yml)}
   - ${file(./sls/resources/mealsBucketCDN.yml)}
   - ${file(./sls/resources/MealsQueue.yml)}
+  - ${file(./sls/resources/mealUploadCheckQueue.yml)}
   - ${file(./sls/resources/DLQAlarmTopic.yml)}
   - ${file(./sls/resources/rateLimitTable.yml)}
 

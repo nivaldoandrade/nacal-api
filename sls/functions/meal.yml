@@ -75,6 +75,13 @@ processMeal:
     - sqs:
         arn: !GetAtt MealsQueue.Arn
         batchSize: 2
+checkMealUpload:
+  handler: src/main/functions/meal/checkMealUpload.handler
+  timeout: 15
+  events:
+    - sqs:
+        arn: !GetAtt MealUploadCheckQueue.Arn
+        batchSize: 10
 newMealUploadedTrigger:
   handler: src/main/functions/meal/newMealUploadedTrigger.handler
   events:

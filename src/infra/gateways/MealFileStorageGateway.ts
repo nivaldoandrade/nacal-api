@@ -58,6 +58,19 @@ export class MealFileStorageGateway {
     await s3Client.send(command);
   }
 
+  async deleteInputFile(inputFileKey: string | null): Promise<void> {
+    if (!inputFileKey) {
+      return;
+    }
+
+    try {
+      await this.deleteObject(inputFileKey);
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete meal input file:', error);
+    }
+  }
+
   async getMetadata(fileKey: string): Promise<MealFileStorageGateway.GetMetadada['result']> {
     const command = new HeadObjectCommand({
       Bucket: this.config.storage.mealsBucketName,

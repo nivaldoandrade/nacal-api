@@ -1,0 +1,40 @@
+Resources:
+  MealUploadCheckQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ${self:service}-${sls:stage}-MealUploadCheckQueue
+      VisibilityTimeout: 90
+      ReceiveMessageWaitTimeSeconds: 20
+      RedriveAllowPolicy:
+        redrivePermission: denyAll
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MealUploadCheckDLQ.Arn
+        maxReceiveCount: 3
+
+  MealUploadCheckDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ${self:service}-${sls:stage}-MealUploadCheckDLQ
+      MessageRetentionPeriod: 1209600
+
+  MealUploadCheckDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: !If
+        - IsProd
+        - true
+        - false
+      AlarmName: ${self:service}-${sls:stage}-MealUploadCheckDLQAlarm
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt MealUploadCheckDLQ.QueueName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DQLAlarmTopic

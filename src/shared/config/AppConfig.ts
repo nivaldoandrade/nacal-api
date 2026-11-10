@@ -51,6 +51,7 @@ export class AppConfig {
 
     this.queue = {
       mealsQueueUrl: env.MEALS_QUEUE_URL,
+      mealUploadCheckQueueUrl: env.MEAL_UPLOAD_CHECK_QUEUE_URL,
     };
 
     this.billing = {
@@ -154,6 +155,7 @@ namespace AppConfig {
 
   export type Queue = {
     mealsQueueUrl: string;
+    mealUploadCheckQueueUrl: string;
   }
 
   export type Billing = {

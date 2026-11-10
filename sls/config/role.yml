@@ -38,5 +38,7 @@ statements:
   - Effect: Allow
     Action:
       - sqs:SendMessage
-    Resource: !GetAtt MealsQueue.Arn
+    Resource:
+      - !GetAtt MealsQueue.Arn
+      - !GetAtt MealUploadCheckQueue.Arn
 

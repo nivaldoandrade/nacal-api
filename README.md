@@ -24,7 +24,8 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
-- **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas da fila (Dead Letter Queue);
+- **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
+- **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
 - **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s) (`reservedConcurrency: 5` está temporariamente desligado até o aumento da cota de concorrência da conta de produção);
 - **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
@@ -84,7 +85,7 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 
 ### 1. Upload e Criação
 1. Usuário envia `POST /create-meal` com `{ contentType, fileSize, timeZone?, description? }` (`description` só para fotos);
-2. Backend cria a refeição no DynamoDB (status: `UPLOADING`) e retorna um `mealId` junto com dados do Presigned POST (base64);
+2. Backend consome a cota, publica na `MealUploadCheckQueue` uma mensagem com atraso de 15 min (ver [Refeição presa](#3-refeição-presa-checagem-de-15-min)), cria a refeição no DynamoDB (status: `UPLOADING`) e retorna um `mealId` junto com dados do Presigned POST (base64, válido por 5 min). Se a publicação ou a gravação falhar, a cota é estornada e a resposta é `500`;
 3. Frontend faz upload direto para o S3 usando o Presigned POST;
 4. S3 recebe o arquivo e dispara evento `ObjectCreated`.
 
@@ -100,7 +101,12 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 13. Backend mantém no máximo 30 itens (`Meal.MAX_FOODS`, o mesmo teto do texto e do "Adicionar item"), calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
 14. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
 
-### 3. Refeição por texto (síncrona)
+### 3. Refeição presa (checagem de 15 min)
+15. A mensagem publicada no passo 2 fica invisível por 900s (`Meal.UPLOAD_CHECK_DELAY_SECONDS`, máximo do SQS; o Presigned POST expira em 5 min) e então é consumida pela Lambda `checkMealUpload`;
+16. Ela lê a refeição com leitura consistente. Em `UPLOADING` (arquivo nunca chegou, ou o gatilho do S3 falhou) ou em `QUEUED` com `attempts = 0` (a publicação na `MealsQueue` falhou, ou a fila acumulou mais de ~10 min), marca `FAILED`, **estorna a cota** (mês e dia, na mesma transação do passo 14) e remove o arquivo do S3, se existir. Em qualquer outro status, ou se a refeição não existir, não faz nada;
+17. A escrita é condicionada ao status lido, então um upload que termina no último segundo não é estornado. Erros voltam para a fila (3 entregas) e depois vão para a `MealUploadCheckDLQ`, com alarme por email.
+
+### 4. Refeição por texto (síncrona)
 Não passa por S3, SQS nem `processMeal`: `POST /meals/text` resolve tudo na própria request (Lambda com `timeout: 29`).
 1. Checa a cota do plano antes de chamar a IA (Free: `403 FREE_QUOTA_EXCEEDED`; Pro: `429 DAILY_MEAL_LIMIT_REACHED`);
 2. Envia o texto ao GPT-5.4-mini (prompt `getTextMealPrompt`) dentro de `<user_note>`, com `<`/`>` neutralizados e tratado como dado. A IA devolve os alimentos e o `mealType` declarado; menções que não dizem qual alimento era ("alguma coisa no pote", "um pacotinho") vêm marcadas com `unidentifiedKind` e são removidas (log `[UNIDENTIFIED]`);
@@ -128,12 +134,12 @@ Não passa por S3, SQS nem `processMeal`: `POST /meals/text` resolve tudo na pr�
 | Status | Quando acontece | Cota | `inputFileUrl` |
 | ------ | --------------- | ---- | -------------- |
 | `REJECTED` | Arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos | Estornada | `null` |
-| `FAILED` | Falha de plataforma após 2 tentativas (OpenAI, timeout, S3, resposta inválida) | Estornada | `null` |
+| `FAILED` | Falha de plataforma após 2 tentativas (OpenAI, timeout, S3, resposta inválida), ou refeição presa em `UPLOADING`/`QUEUED` 15 min depois do `create-meal` | Estornada | `null` |
 | `DELETED` | Usuário excluiu a refeição (`DELETE /meals/{id}`) | Não estornada | some da API (`404`) |
 
 Os motivos de rejeição são `INVALID_FILE`, `NOT_A_MEAL` e `NO_FOOD_DETECTED`. Uma tentativa rejeitada ou com falha continua contando no rate limit de `POST /create-meal`.
 
-O estorno é feito numa transação (`TransactWriteItems`) que muda o status da refeição e decrementa o contador mensal juntos. Cada operação usa seu próprio `ClientRequestToken` (`<mealId>#fail#<tentativa>` / `<mealId>#reject#<tentativa>`), então um retry da fila não colide com outra operação na janela de idempotência do DynamoDB. Se o contador já estiver em zero, a refeição é marcada com `quotaRefunded: false`.
+O estorno é feito numa transação (`TransactWriteItems`) que muda o status da refeição e decrementa o contador mensal juntos. Cada operação usa seu próprio `ClientRequestToken` (`<mealId>#fail#<tentativa>` / `<mealId>#reject#<tentativa>` / `<mealId>#upload` para a refeição presa em `UPLOADING`; o DynamoDB aceita no máximo 36 caracteres), então um retry da fila não colide com outra operação na janela de idempotência do DynamoDB. Se o contador já estiver em zero, a refeição é marcada com `quotaRefunded: false`.
 
 ## Fluxo de Cadastro por E-mail
 
@@ -271,7 +277,7 @@ O `MealQuotaService` controla as cotas com contadores atômicos e condicionais n
 | Pro (pago ou trial) | 20 refeições por dia (dia em `America/Sao_Paulo`) | `YYYY-MM-DD` no diário + `YYYY-MM#PRO` no mensal, sem limite, só para estatística | `429 DAILY_MEAL_LIMIT_REACHED` |
 
 - O contador do Free conta só as refeições feitas no Free; as do Pro (trial ou pago) vão para `YYYY-MM#PRO`. Quem volta ao Free no meio do mês tem as 20 menos o que já usou no Free naquele mês: trial logo depois do cadastro → 20 cheias; usou as 20 do Free, fez o trial e voltou no mesmo mês → 0 até o mês seguinte. O mesmo vale para o Pro pago que cancela, deixa de pagar ou tem o anual vencido.
-- A refeição grava `quotaMonth` e `quotaDay` (este só no Pro). O estorno (`REJECTED`, `FAILED` ou falha ao gravar a refeição) devolve os dois contadores no bucket gravado, mesmo que aconteça no dia seguinte.
+- A refeição grava `quotaMonth` e `quotaDay` (este só no Pro). O estorno (`REJECTED`, `FAILED`, incluindo a refeição presa, ou falha ao gravar a refeição) devolve os dois contadores no bucket gravado, mesmo que aconteça no dia seguinte.
 - "Adicionar item": no Free sem cota do mês responde `403 FREE_QUOTA_EXCEEDED`; no Pro não é bloqueado pelo limite diário (já tem o teto de 5 adições por refeição e 20/h).
 - Os rate limits por hora ([Rate Limit](#rate-limit)) continuam valendo junto com as cotas.
 - `GET /me` devolve `mealQuota` (mensal) e `dailyMealQuota` (só Pro).
@@ -445,6 +451,7 @@ functions:
   addMealItems: nacal-api-dev-addMealItems
   newMealUploadedTrigger: nacal-api-dev-newMealUploadedTrigger
   processMeal: nacal-api-dev-processMeal
+  checkMealUpload: nacal-api-dev-checkMealUpload
 ```
 
 O endpoint base da API será: `https://xxx.execute-api.sa-east-1.amazonaws.com`
@@ -1177,6 +1184,8 @@ com header `Retry-After` em segundos.
 | ---------- | ------------- | ----------------------------------------------------------------- |
 | MealsQueue | `processMeal` | Consome mensagens e processa refeições via OpenAI                 |
 | MealsDLQ   | --            | Dead Letter Queue para falhas inesperadas que esgotaram as entregas da fila |
+| MealUploadCheckQueue | `checkMealUpload` | Mensagem atrasada 15 min por refeição de foto/áudio; marca `FAILED` e estorna a cota se a refeição ficou presa |
+| MealUploadCheckDLQ   | --                | Dead Letter Queue da checagem, com alarme |
 
 ## Tecnologias Utilizadas
 
@@ -1240,6 +1249,8 @@ com header `Retry-After` em segundos.
 
 - **MealsQueue**: Fila para processamento assíncrono de refeições
 - **MealsDLQ**: Dead Letter Queue com alarme por email (SNS)
+- **MealUploadCheckQueue**: Fila da checagem de refeição presa (atraso de 15 min por mensagem)
+- **MealUploadCheckDLQ**: Dead Letter Queue da checagem, com alarme por email (SNS)
 
 ### API Gateway
 
