@@ -25,7 +25,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
-- **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues);
+- **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues) e quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
 - **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s) (`reservedConcurrency: 5` está temporariamente desligado até o aumento da cota de concorrência da conta de produção);
 - **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
@@ -1182,7 +1182,7 @@ com header `Retry-After` em segundos.
 
 | Fila       | Função        | Descrição                                                         |
 | ---------- | ------------- | ----------------------------------------------------------------- |
-| MealsQueue | `processMeal` | Consome mensagens e processa refeições via OpenAI                 |
+| MealsQueue | `processMeal` | Consome mensagens e processa refeições via OpenAI; alarme quando a mensagem mais antiga passa de 2 min |
 | MealsDLQ   | --            | Dead Letter Queue para falhas inesperadas que esgotaram as entregas da fila |
 | MealUploadCheckQueue | `checkMealUpload` | Mensagem atrasada 15 min por refeição de foto/áudio; marca `FAILED` e estorna a cota se a refeição ficou presa |
 | MealUploadCheckDLQ   | --                | Dead Letter Queue da checagem, com alarme |
@@ -1247,7 +1247,7 @@ com header `Retry-After` em segundos.
 
 ### SQS
 
-- **MealsQueue**: Fila para processamento assíncrono de refeições
+- **MealsQueue**: Fila para processamento assíncrono de refeições, com alarme por email (SNS) quando a mensagem mais antiga passa de 2 min (`MealsQueueAgeAlarm`)
 - **MealsDLQ**: Dead Letter Queue com alarme por email (SNS)
 - **MealUploadCheckQueue**: Fila da checagem de refeição presa (atraso de 15 min por mensagem)
 - **MealUploadCheckDLQ**: Dead Letter Queue da checagem, com alarme por email (SNS)

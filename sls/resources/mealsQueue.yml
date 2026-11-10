@@ -40,3 +40,25 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref DQLAlarmTopic
+
+  MealsQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: !If
+        - IsProd
+        - true
+        - false
+      AlarmName: ${self:service}-${sls:stage}-MealsQueueAgeAlarm
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt MealsQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 120
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DQLAlarmTopic
