@@ -43,4 +43,4 @@ reconcilePayments:
   events:
     - schedule:
         rate: rate(1 hour)
-        enabled: ${param:reconcileScheduleEnabled}
+        enabled: ${file(./sls/config/reconcileScheduleEnabled.js):enabled}
