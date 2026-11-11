@@ -146,8 +146,6 @@ export class WebhookUseCase {
     plan,
     now,
   }: WebhookUseCase.ApplyPaymentSucceededParams): Promise<void> {
-    const cyclePaidUntil = this.addCycle(dueDate, plan);
-
     if (!existing) {
       const subscription = new Subscription({
         accountId,
@@ -155,7 +153,7 @@ export class WebhookUseCase {
         status: Subscription.Status.ACTIVE,
         planId: plan.id,
         trialStartedAt: now,
-        paidUntil: cyclePaidUntil,
+        paidUntil: this.addCycle(dueDate, plan),
         gatewayRefs: subscriptionRef ? { subscriptionId: subscriptionRef } : undefined,
       });
 
@@ -172,33 +170,50 @@ export class WebhookUseCase {
           throw error;
         }
 
-        this.mergePaymentSucceeded(winner, cyclePaidUntil, plan, subscriptionRef);
+        this.mergePaymentSucceeded(winner, dueDate, plan, subscriptionRef);
         await this.subscriptionRepository.save(winner);
       }
 
       return;
     }
 
-    this.mergePaymentSucceeded(existing, cyclePaidUntil, plan, subscriptionRef);
+    this.mergePaymentSucceeded(existing, dueDate, plan, subscriptionRef);
     await this.subscriptionRepository.save(existing);
   }
 
   private mergePaymentSucceeded(
     subscription: Subscription,
-    cyclePaidUntil: Date,
+    dueDate: string,
     plan: WebhookUseCase.Plan,
     subscriptionRef?: string,
   ): void {
+    const cyclePaidUntil = this.addCycle(dueDate, plan);
+
     subscription.status = Subscription.Status.ACTIVE;
     subscription.planId = plan.id;
 
     if (!subscription.paidUntil || cyclePaidUntil > subscription.paidUntil) {
-      subscription.paidUntil = cyclePaidUntil;
+      subscription.paidUntil = this.resolveRenewedPaidUntil(subscription.paidUntil, dueDate, plan);
     }
 
     if (subscriptionRef) {
       subscription.gatewayRefs = { ...subscription.gatewayRefs, subscriptionId: subscriptionRef };
     }
+  }
+
+  private resolveRenewedPaidUntil(
+    currentPaidUntil: Date | undefined,
+    dueDate: string,
+    plan: WebhookUseCase.Plan,
+  ): Date {
+    const isEarlyYearlyRenewal = plan.cycle === 'YEARLY'
+      && Boolean(currentPaidUntil && currentPaidUntil > new Date(dueDate));
+
+    if (!isEarlyYearlyRenewal || !currentPaidUntil) {
+      return this.addCycle(dueDate, plan);
+    }
+
+    return this.addCycle(currentPaidUntil.toISOString(), plan);
   }
 
   private addCycle(dueDate: string, plan: WebhookUseCase.Plan): Date {
