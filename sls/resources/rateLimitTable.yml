@@ -4,6 +4,10 @@ Resources:
     Properties:
       TableName: ${self:service}-${sls:stage}-RateLimitTable
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If
+        - IsProd
+        - true
+        - false
       AttributeDefinitions:
         - AttributeName: PK
           AttributeType: S
