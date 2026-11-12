@@ -1182,7 +1182,15 @@ com header `Retry-After` em segundos.
 | ------------------ | --------------------------- | ------------------------------------------------------------------------ |
 | PreSignUp          | `preSignUpTrigger`          | Aplica o beta fechado (cadastro por e-mail e Google); em `PreSignUp_ExternalProvider` cria usuário nativo "shadow" (`custom:internalId`) ou reaproveita o nativo existente (confirmando-o se estava pendente) e vincula o Identity Provider. Cadastros por e-mail **não** são mais auto-confirmados |
 | PreTokenGeneration | `preTokenGenerationTrigger` | Injeta o claim `internalId` no access token a partir de `custom:internalId` |
-| CustomMessage      | `customMessageTrigger`      | Personaliza em português os e-mails de confirmação de cadastro, reenvio de código e recuperação de senha |
+| CustomMessage      | `customMessageTrigger`      | Monta em HTML (com modo escuro) os e-mails de confirmação de cadastro, reenvio de código e recuperação de senha, a partir dos templates em `src/infra/emails/`. Os demais `triggerSource` ficam com o texto padrão do Cognito |
+
+### E-mails transacionais
+
+- O layout base fica em `src/infra/emails/emailLayout.ts` e os e-mails em `src/infra/emails/templates/`. Cada e-mail é uma lista de blocos (parágrafo, código, nota) que vira HTML e texto puro (`{ subject, html, text }`). O texto puro serve para envios próprios pelo SES, que aceitam as duas versões;
+- O HTML usa tabelas e CSS inline. Os blocos `<style>` ficam separados (base, modo escuro, Outlook.com, Apple) porque o Gmail descarta um bloco inteiro quando não aceita um seletor. Tem ajustes para o Outlook no Windows (tabela fixa de 520px, fontes forçadas, 96 DPI) e logo em PNG público (`https://www.nacal.app/assets/apple-touch-icon.png`);
+- Limites do Cognito: corpo com até 20.000 caracteres e assunto com até 140. Acima dos 20.000, o Cognito descarta a mensagem sem erro e manda o texto padrão; por isso o trigger usa a versão em texto puro quando o HTML passa do limite. O corpo precisa conter o `codeParameter` (`{####}`) e só é aceito com `EmailSendingAccount: DEVELOPER`;
+- Preview local: `npx tsx scripts/previewEmails.ts [pasta]` grava o HTML e o texto de cada e-mail e um `index.html` com os temas claro e escuro lado a lado, e mostra o tamanho de cada HTML. Sem pasta, grava em `$TMPDIR/nacal-email-preview`;
+- Para testar de verdade: `sls deploy function -f customMessageTrigger --stage dev` e um cadastro ou "esqueci a senha" em dev.
 
 ### Eventos S3
 
@@ -1362,6 +1370,7 @@ src/
     ├── ai/                    # Integrações de IA
     │   ├── gateways/          # MealAiGateway (OpenAI) e MealGateGateway (Clef-flash)
     │   └── prompts/           # Prompts de análise (PT-BR)
+    ├── emails/                # Layout base (emailLayout) e templates dos e-mails transacionais
     └── utils/                 # downloadByURL
 ```
 
