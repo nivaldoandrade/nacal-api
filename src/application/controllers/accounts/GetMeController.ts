@@ -24,7 +24,7 @@ export class GetMeController extends Controller<'private'> {
 
     const accountId = request.accountId;
 
-    const { isOnboarded, profile, goal, subscription } = await this.getAccountData(request);
+    const { isOnboarded, email, profile, goal, subscription } = await this.getAccountData(request);
 
     const plan = Subscription.resolveEffectivePlan(
       subscription
@@ -42,6 +42,7 @@ export class GetMeController extends Controller<'private'> {
       statusCode: 200,
       body: {
         isOnboarded,
+        email,
         profile,
         goal,
         subscription: subscription
@@ -101,6 +102,7 @@ namespace GetMeController {
 
   export type Response = {
     isOnboarded: boolean;
+    email: string;
     profile: {
       name: string;
       birthDate: string;

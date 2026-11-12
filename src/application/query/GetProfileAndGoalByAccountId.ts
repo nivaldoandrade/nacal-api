@@ -24,12 +24,13 @@ export class GetProfileAndGoalByAccountId {
       TableName: this.config.db.dynamodb.mainTable,
       Limit: 5,
       Select: 'SPECIFIC_ATTRIBUTES',
-      ProjectionExpression: '#isOnboarded, #name, #birthDate, #gender, #height, #weight, #goal, #calories, #proteins, #carbohydrates, #fats, #type, #status, #planId, #trialEndsAt, #paidUntil',
+      ProjectionExpression: '#isOnboarded, #email, #name, #birthDate, #gender, #height, #weight, #goal, #calories, #proteins, #carbohydrates, #fats, #type, #status, #planId, #trialEndsAt, #paidUntil',
       KeyConditionExpression: '#PK = :PK AND begins_with(#SK, :SK)',
       ExpressionAttributeNames: {
         '#PK': 'PK',
         '#SK': 'SK',
         '#isOnboarded': 'isOnboarded',
+        '#email': 'email',
         '#name': 'name',
         '#birthDate': 'birthDate',
         '#gender': 'gender',
@@ -74,7 +75,7 @@ export class GetProfileAndGoalByAccountId {
       item.type === SubscriptionItem.TYPE
     ));
 
-    const { type: _accountType, isOnboarded } = account;
+    const { type: _accountType, isOnboarded, email } = account;
 
     let profileOutput: GetProfileAndGoalByAccountId.ProfileOutput | null = null;
     if (profile) {
@@ -96,6 +97,7 @@ export class GetProfileAndGoalByAccountId {
 
     return {
       isOnboarded,
+      email,
       profile: profileOutput,
       goal: goalOutput,
       subscription: subscriptionOutput,
@@ -107,7 +109,7 @@ export namespace GetProfileAndGoalByAccountId {
 
   export type AccountItemType = Pick<
     AccountItem.Item,
-    'isOnboarded' | 'type'
+    'isOnboarded' | 'email' | 'type'
   >;
 
   export type ProfileOutput = {
@@ -150,6 +152,7 @@ export namespace GetProfileAndGoalByAccountId {
 
   export type Output = {
     isOnboarded: boolean;
+    email: string;
     profile: ProfileOutput | null;
     goal: GoalOutput | null;
     subscription: SubscriptionOutput | null;

@@ -722,7 +722,7 @@ com header `Retry-After` em segundos.
 
 #### Get Me -> `/me`
 
-- Retorna o `isOnboarded`, o perfil e as metas do usuário autenticado:
+- Retorna o `isOnboarded`, o `email` da conta, o perfil e as metas do usuário autenticado (o app usa o `email` para identificar a conta no pedido de exclusão por e-mail):
 
   ```bash
   curl -X GET https://xxx.execute-api.sa-east-1.amazonaws.com/me \
@@ -733,6 +733,7 @@ com header `Retry-After` em segundos.
   ```json
   {
     "isOnboarded": true,
+    "email": "joao@email.com",
     "profile": {
       "name": "João Silva",
       "birthDate": "1990-05-15",
