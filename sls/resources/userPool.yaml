@@ -97,6 +97,14 @@ Resources:
           - IsProd
           - nacal
           - nacal-dev
+        ManagedLoginVersion: 2
+    ManagedLoginBranding:
+      Type: AWS::Cognito::ManagedLoginBranding
+      DependsOn: UserPoolDomain
+      Properties:
+        UserPoolId: !Ref UserPool
+        ClientId: !Ref UserPoolClient
+        UseCognitoProvidedValues: true
     GoogleIdentityProvider:
       Type: AWS::Cognito::UserPoolIdentityProvider
       Properties:

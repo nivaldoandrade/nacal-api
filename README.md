@@ -222,7 +222,7 @@ Frontend                          Cognito                       API (Lambda)
 ```
 
 1. O frontend gera um `code_verifier` aleatório e redireciona o usuário para o Cognito (`/oauth2/authorize`) com o `code_challenge` (PKCE);
-2. O usuário autentica com a conta Google e o Cognito redireciona de volta com um `code`;
+2. O usuário autentica com a conta Google e o Cognito redireciona de volta com um `code`. O app manda `prompt=select_account` para o Google mostrar o seletor de contas; o Cognito só repassa esse parâmetro no **managed login** (`ManagedLoginVersion: 2` no `UserPoolDomain`, com um `ManagedLoginBranding` padrão). No hosted UI clássico ele é ignorado e o Google entra direto na última conta usada;
 3. No primeiro login com Google, o trigger `PreSignUp_ExternalProvider` cria um usuário nativo "shadow" no Cognito (username = email, atributo `custom:internalId`) e vincula o Identity Provider a esse usuário;
 4. O frontend envia `code`, `redirectUri` e `codeVerifier` para `POST /auth/oauth/callback`;
 5. O backend troca o `code` pelos tokens, deriva identidade do token (exige `email_verified`) e, se ainda não houver `Account` para o `internalId`, **cria a `Account` no DynamoDB**. Se existir um `PendingSignUp` (cadastro por e-mail sem código, seguido de login com Google), ele é aplicado e a conta já nasce com onboarding; caso contrário, `isOnboarded: false` — retorna `200` com `{ accessToken, refreshToken, isOnboarded }`. O access token já contém o claim `internalId`;
