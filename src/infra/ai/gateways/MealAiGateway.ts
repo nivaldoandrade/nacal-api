@@ -238,7 +238,7 @@ export class MealAiGateway {
     const inputFile = Meal.getInputFileByKey(inputFileKey);
 
     const transcription = await this.client.audio.transcriptions.create({
-      model: 'gpt-4o-mini-transcribe',
+      model: 'gpt-4o-transcribe',
       file: await toFile(
         audioBuffer,
         `audio.${inputFile.extension}`,

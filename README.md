@@ -96,7 +96,7 @@ A aplicação segue uma arquitetura **serverless event-driven** com separação 
 8. Valida o arquivo real (assinatura/magic bytes), tamanho e duração: foto JPEG até 10 MB; áudio M4A/WebM até 2 MB e 1–32s. Arquivo inválido vira `REJECTED` (`INVALID_FILE`), com estorno de cota e remoção do arquivo;
 9. Para **fotos**, o gate Clef-flash avalia se há comida/bebida. Score abaixo de `0.30` vira `REJECTED` (`NOT_A_MEAL`), com estorno de cota; falha, timeout ou resposta inválida do gate não bloqueiam o processamento (fail-open);
 10. Para **fotos**, a imagem vai para o GPT-5.4-mini junto com a `description`, quando enviada, delimitada em `<user_note>` (com `<`/`>` neutralizados). A nota acrescenta itens não visíveis e corrige identidade/quantidade dos visíveis, dentro do plausível para a imagem; ela é tratada como dado, nunca como instrução, e não monta a refeição sozinha se a foto não mostra comida;
-11. Para **áudios**, transcreve via GPT-4o-mini-transcribe e envia a transcrição ao GPT-5.4-mini com o mesmo prompt da refeição por texto (`getTextMealPrompt`, variante de áudio), dentro de `<user_note>` com `<`/`>` neutralizados. A variante de áudio só muda a introdução: diz à IA que é uma fala transcrita, para ignorar hesitações e, quando o usuário se corrige, usar a versão corrigida. Menções que não dizem qual alimento era ("alguma coisa no pote") são removidas como no texto, sem aviso ao usuário (`unidentified` fica `null`). Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
+11. Para **áudios**, transcreve via GPT-4o-transcribe (o `gpt-4o-mini-transcribe` trocava "cem" por "cinco" num áudio real do iPhone; idioma e prompt de contexto não corrigiam) e envia a transcrição ao GPT-5.4-mini com o mesmo prompt da refeição por texto (`getTextMealPrompt`, variante de áudio), dentro de `<user_note>` com `<`/`>` neutralizados. A variante de áudio só muda a introdução: diz à IA que é uma fala transcrita, para ignorar hesitações e, quando o usuário se corrige, usar a versão corrigida. Menções que não dizem qual alimento era ("alguma coisa no pote") são removidas como no texto, sem aviso ao usuário (`unidentified` fica `null`). Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
 12. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e um `mealType` opcional quando o usuário declara a refeição (no áudio ou na descrição da foto). Para **fotos**, também devolve `unidentified` (`DRINK`, `PACKAGED`, `COVERED`, `OTHER` ou `null`) quando há algo claramente presente cujo conteúdo não dá para ver e a nota não explica, e marca cada alimento com `unidentifiedKind` (`null` quando identificado). O `MealAiGateway` remove os alimentos marcados (log `[UNIDENTIFIED]`) e, se `unidentified` veio `null`, usa a categoria do primeiro alimento removido; se nenhum alimento sobrar, a refeição vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
 13. Backend mantém no máximo 30 itens (`Meal.MAX_FOODS`, o mesmo teto do texto e do "Adicionar item"), calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
 14. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
@@ -1207,7 +1207,7 @@ com header `Retry-After` em segundos.
 - TypeScript;
 - Zod (validação de schemas);
 - esbuild (bundling);
-- OpenAI API (GPT-5.4-mini, GPT-4o-mini-transcribe);
+- OpenAI API (GPT-5.4-mini, GPT-4o-transcribe);
 - Cloudflare Workers AI (Clef-flash, gate de foto);
 - Asaas (gateway de pagamento — checkout hospedado + webhook);
 - `image-size` e `music-metadata` (validação de imagens e áudios);
@@ -1484,7 +1484,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 ### Processamento de áudio falha
 - Verifique se o arquivo de áudio não está corrompido;
 - Confirme que o formato é suportado (M4A ou WebM, 1–32s e até 2 MB);
-- Verifique se a `OPENAI_API_KEY` tem acesso ao modelo `gpt-4o-mini-transcribe`;
+- Verifique se a `OPENAI_API_KEY` tem acesso ao modelo `gpt-4o-transcribe`;
 - Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), não `FAILED`.
 
 ### "The provider Google does not exist for User Pool"
