@@ -118,7 +118,7 @@ Não passa por S3, SQS nem `processMeal`: `POST /meals/text` resolve tudo na pr�
 ### Validação do arquivo
 
 - **Fotos**: apenas JPEG real (assinatura `FF D8 FF`), até **10 MB** e com dimensões válidas. O app normaliza outras imagens para JPEG antes do upload;
-- **Áudios**: apenas M4A ou WebM, até **2 MB** e entre **1 e 32 segundos**; o container e a assinatura do arquivo são conferidos;
+- **Áudios**: apenas M4A ou WebM, até **2 MB** e entre **1 e 32 segundos**; o container e a assinatura do arquivo são conferidos. A duração vem do `music-metadata`; quando um WebM não traz a duração no cabeçalho (gravação do Safari no iPhone e no Mac), ela é calculada pelo timecode do último bloco de áudio (`src/shared/utils/getWebmDurationSeconds.ts`);
 - Arquivo inválido, corrompido ou fora dos limites vira `REJECTED` com `rejectionReason: INVALID_FILE`, a cota é estornada e o arquivo é removido do S3.
 
 ### Gate de foto (Cloudflare Workers AI)

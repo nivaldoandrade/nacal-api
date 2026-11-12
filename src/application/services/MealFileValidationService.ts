@@ -1,6 +1,7 @@
 import { Meal } from '@application/entities/Meal';
 import { MealRejectedError } from '@application/errors/MealRejectedError';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { getWebmDurationSeconds } from '@shared/utils/getWebmDurationSeconds';
 import { imageSize } from 'image-size';
 import { parseBuffer } from 'music-metadata';
 
@@ -76,7 +77,8 @@ export class MealFileValidationService {
         mimeType,
         size: file.length,
       });
-      const durationSeconds = metadata.format.duration;
+      const durationSeconds = metadata.format.duration
+        ?? (mimeType === 'audio/webm' ? getWebmDurationSeconds(file) : null);
 
       if (
         !durationSeconds
