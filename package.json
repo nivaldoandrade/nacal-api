@@ -9,6 +9,8 @@
   "deploy:prod": "node scripts/check-prod-env.mjs && sls deploy --stage prod"
  },
  "devDependencies": {
+  "@aws-sdk/client-lambda": "3.1165.0",
+  "@aws-sdk/client-sesv2": "3.1165.0",
   "@eslint/js": "^10.0.1",
   "@types/aws-lambda": "^8.10.160",
   "@types/node": "^25.3.0",

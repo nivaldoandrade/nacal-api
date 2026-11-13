@@ -1,13 +1,15 @@
 export type EmailBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'code'; value: string }
-  | { type: 'note'; text: string };
+  | { type: 'note'; text: string }
+  | { type: 'button'; text: string; href: string };
 
 export type EmailContent = {
   subject: string;
   preheader: string;
   heading: string;
   blocks: EmailBlock[];
+  footerReason?: string;
 };
 
 export type RenderedEmail = {
@@ -96,6 +98,12 @@ function renderBlockHtml(block: EmailBlock) {
     return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 24px"><tr><td align="center" bgcolor="${colors.accent}" style="background-color:${colors.accent};border-radius:12px;padding:20px 12px"><span class="nc-code" style="font-family:${MONO_STACK};font-size:32px;line-height:40px;mso-line-height-rule:exactly;font-weight:700;letter-spacing:8px;color:${colors.accentInk}">${escapeHtml(block.value)}</span></td></tr></table>`;
   }
 
+  if (block.type === 'button') {
+    const href = escapeHtml(block.href);
+
+    return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:8px auto 24px"><tr><td align="center" bgcolor="${colors.accent}" style="background-color:${colors.accent};border-radius:12px"><a href="${href}" target="_blank" style="display:inline-block;padding:14px 28px;font-family:${FONT_STACK};font-size:16px;line-height:24px;mso-line-height-rule:exactly;font-weight:600;color:${colors.accentInk};text-decoration:none;border-radius:12px">${escapeHtml(block.text)}</a></td></tr></table>`;
+  }
+
   if (block.type === 'note') {
     return `<p class="nc-muted" style="${textStyle({ size: 14, lineHeight: 22, color: colors.muted, margin: '0 0 16px' })}">${escapeHtml(block.text)}</p>`;
   }
@@ -106,6 +114,10 @@ function renderBlockHtml(block: EmailBlock) {
 function renderBlockText(block: EmailBlock) {
   if (block.type === 'code') {
     return `    ${block.value}`;
+  }
+
+  if (block.type === 'button') {
+    return `${block.text}: ${block.href}`;
   }
 
   return block.text;
@@ -131,7 +143,7 @@ function renderHead(subject: string) {
   ].join('');
 }
 
-function renderHtml({ subject, preheader, heading, blocks }: EmailContent) {
+function renderHtml({ subject, preheader, heading, blocks, footerReason = FOOTER_REASON }: EmailContent) {
   const body = blocks.map(renderBlockHtml).join('');
   const footerStyle = textStyle({ size: 12, lineHeight: 18, color: colors.muted, margin: '0 0 8px' });
   const lastFooterStyle = textStyle({ size: 12, lineHeight: 18, color: colors.muted, margin: '0' });
@@ -151,7 +163,7 @@ function renderHtml({ subject, preheader, heading, blocks }: EmailContent) {
     body,
     '</td></tr>',
     '<tr><td align="center" style="padding:24px 16px 0">',
-    `<p class="nc-muted" style="${footerStyle}">${escapeHtml(FOOTER_REASON)}</p>`,
+    `<p class="nc-muted" style="${footerStyle}">${escapeHtml(footerReason)}</p>`,
     `<p class="nc-muted" style="${footerStyle}">${escapeHtml(FOOTER_REPLY)}</p>`,
     `<p class="nc-muted" style="${lastFooterStyle}"><a class="nc-link" href="${SITE_URL}" style="font-family:${FONT_STACK};color:${colors.link};text-decoration:none">nacal.app</a></p>`,
     '</td></tr>',
@@ -162,13 +174,13 @@ function renderHtml({ subject, preheader, heading, blocks }: EmailContent) {
   ].join('');
 }
 
-function renderText({ heading, blocks }: EmailContent) {
+function renderText({ heading, blocks, footerReason = FOOTER_REASON }: EmailContent) {
   return [
     heading,
     '',
     ...blocks.flatMap((block) => [renderBlockText(block), '']),
     '--',
-    FOOTER_REASON,
+    footerReason,
     FOOTER_REPLY,
     'nacal.app',
   ].join('\n');

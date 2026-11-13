@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { RenderedEmail } from '../src/infra/emails/emailLayout';
+import { betaInviteEmail } from '../src/infra/emails/templates/betaInviteEmail';
 import { confirmSignUpEmail } from '../src/infra/emails/templates/confirmSignUpEmail';
 import { forgotPasswordEmail } from '../src/infra/emails/templates/forgotPasswordEmail';
 
@@ -12,6 +13,7 @@ const sample = { code: '482913', name: 'Maria Silva' };
 const emails: Record<string, RenderedEmail> = {
   confirmSignUp: confirmSignUpEmail(sample),
   forgotPassword: forgotPasswordEmail(sample),
+  betaInvite: betaInviteEmail(),
 };
 
 const outDir = resolve(process.argv[2] ?? join(tmpdir(), 'nacal-email-preview'));

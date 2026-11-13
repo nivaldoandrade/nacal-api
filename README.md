@@ -477,6 +477,19 @@ Para produção, use `AWS_PROFILE=nacal-prod yarn deploy:prod`: o script valida 
 - `BETA_GATE_ENABLED`/`MEAL_GATE_ENABLED` diferentes de `true`/`false`, beta ligado sem e-mails ou `BETA_ALLOWED_EMAILS` acima de 2 KB;
 - `AWS_PROFILE` ausente.
 
+#### Convidar para o beta
+
+A lista de espera da landing guarda só o e-mail, então o convite vai por e-mail (template `betaInviteEmail`, enviado pelo SES do `COGNITO_EMAIL` com Reply-To em `COGNITO_EMAIL_TO_REPLY`). Para cada onda:
+
+1. Adicione os e-mails em `BETA_ALLOWED_EMAILS` no `.env.prod` e rode `AWS_PROFILE=nacal-prod yarn deploy:prod`.
+2. Dry-run (gera o preview e confere se todos já estão liberados na Lambda publicada):
+   ```bash
+   AWS_PROFILE=nacal-prod npx tsx scripts/sendBetaInvites.ts a@exemplo.com b@exemplo.com
+   ```
+3. Envio: o mesmo comando com `--send`. Use `--stage=dev` para testar com o `.env` e a stack de dev.
+
+O script lê `BETA_ALLOWED_EMAILS` e `BETA_GATE_ENABLED` do `nacal-api-<stage>-preSignUpTrigger` e não envia nada se algum destinatário ainda não estiver liberado. Cada destinatário recebe um e-mail separado.
+
 ### 5. Configurar o CDN na zona de DNS (opcional)
 
 Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio customizado da distribuição CloudFront para os arquivos de refeição). O registro de DNS do domínio precisa apontar para o domain da distribuição.
