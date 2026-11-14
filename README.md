@@ -2,6 +2,8 @@
 
 API serverless para um diário alimentar inteligente com inteligência artificial. O sistema permite que os usuários registrem suas refeições através de **fotos**, **áudios** ou **texto**, que são analisados automaticamente por IA para identificar os alimentos, estimar quantidades e calcular macronutrientes (proteínas, carboidratos e gorduras). O sistema também calcula metas diárias personalizadas de calorias e macros com base no perfil do usuário.
 
+> **Novo no projeto?** Comece pelo [Guia da API](docs/guide/README.md): visão geral, arquitetura do código e fluxos com diagramas.
+
 ## Funcionalidades
 
 - **Autenticação completa**: Cadastro com **confirmação de e-mail por código**, login, refresh token e recuperação de senha via AWS Cognito; e-mail normalizado (minúsculas) em todos os fluxos;
@@ -32,265 +34,38 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 
 ## Arquitetura
 
-![Diagrama da Arquitetura](/api/assets/diagrama-arquitetura.png)
+Backend **serverless e orientado a eventos** na AWS (`sa-east-1`): API Gateway HTTP API com authorizer JWT do Cognito, Lambdas em Node.js 24 (arm64), DynamoDB single-table, S3 + CloudFront para os arquivos das refeições, SQS para o processamento assíncrono com IA (OpenAI, com gate de foto no Cloudflare Workers AI) e Asaas para os pagamentos.
 
-A aplicação segue uma arquitetura **serverless event-driven** com separação clara de camadas:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        API Gateway HTTP API                      │
-│                     (JWT Authorizer - Cognito)                   │
-└──────────┬──────────────────────────────────┬────────────────────┘
-           │                                  │
-           ▼                                  ▼
-   ┌───────────────┐                ┌──────────────────┐
-   │  Lambda HTTP  │                │ Cognito Triggers │
-   │  (Controllers)│                │  (PreSignUp,     │
-   │               │                │   PreTokenGen,   │
-   │  - Auth       │                │   CustomMessage) │
-   │  - Profile    │                └──────────────────┘
-   │  - Meal       │
-   │  - Account    │
-   │  - Billing    │
-   └───────┬───────┘
-           │
-           ▼
-   ┌────────────────────┐
-   │  DynamoDB          │◄──── Single Table Design
-   │  (Accounts,        │      (PAY_PER_REQUEST)
-   │   Profiles,        │
-   │   Goals,           │
-   │   Meals,           │
-   │   Subscriptions)   │
-   └────────────────────┘
-           │
-           ▼ (upload via Presigned POST)
-   ┌───────────────┐    S3 Event    ┌──────────────┐    SQS     ┌──────────────┐
-   │  S3 Bucket    │───────────────►│ MealUploaded │──────────►│ MealQueue    │
-   │  (Meals)      │                │ Trigger      │           │ Consumer     │
-   └───────────────┘                └──────────────┘           └──────┬───────┘
-                                                                      │
-                                                                      ▼
-                                                              ┌──────────────┐
-                                                              │  OpenAI API  │
-                                                              │  (GPT-5.4-mini│
-                                                              │   Vision /   │
-                                                              │   Transcribe)│
-                                                              └──────────────┘
+```mermaid
+flowchart LR
+    app["App"] --> apigw["API Gateway<br/>+ JWT Cognito"] --> lambdas["Lambdas HTTP"]
+    lambdas --> ddb[("DynamoDB")]
+    app -. "Presigned POST" .-> s3[("S3")]
+    s3 --> trig["newMealUploadedTrigger"] --> q[["SQS"]] --> proc["processMeal"]
+    proc --> ai["OpenAI + Cloudflare"]
+    proc --> ddb
+    asaas["Asaas"] -- "webhook" --> lambdas
 ```
 
-> Fotos passam por um gate opcional no Cloudflare Workers AI antes da OpenAI; detalhes em [Validação, gate e rejeição](#validação-gate-e-rejeição).
+A explicação completa, com diagramas de cada parte, está no **[Guia da API](docs/guide/README.md)**:
 
-## Fluxo de Processamento de Refeições
-
-### 1. Upload e Criação
-1. Usuário envia `POST /create-meal` com `{ contentType, fileSize, timeZone?, description? }` (`description` só para fotos);
-2. Backend consome a cota, publica na `MealUploadCheckQueue` uma mensagem com atraso de 15 min (ver [Refeição presa](#3-refeição-presa-checagem-de-15-min)), cria a refeição no DynamoDB (status: `UPLOADING`) e retorna um `mealId` junto com dados do Presigned POST (base64, válido por 5 min). Se a publicação ou a gravação falhar, a cota é estornada e a resposta é `500`;
-3. Frontend faz upload direto para o S3 usando o Presigned POST;
-4. S3 recebe o arquivo e dispara evento `ObjectCreated`.
-
-### 2. Processamento Assíncrono
-5. Lambda `newMealUploadedTrigger` é acionada pelo evento S3;
-6. Atualiza o status da refeição para `QUEUED` e publica mensagem na fila SQS;
-7. Lambda `processMeal` consome a mensagem, reivindica a refeição com lease condicional (`PROCESSING`) e baixa o arquivo do S3;
-8. Valida o arquivo real (assinatura/magic bytes), tamanho e duração: foto JPEG até 10 MB; áudio M4A/WebM até 2 MB e 1–32s. Arquivo inválido vira `REJECTED` (`INVALID_FILE`), com estorno de cota e remoção do arquivo;
-9. Para **fotos**, o gate Clef-flash avalia se há comida/bebida. Score abaixo de `0.30` vira `REJECTED` (`NOT_A_MEAL`), com estorno de cota; falha, timeout ou resposta inválida do gate não bloqueiam o processamento (fail-open);
-10. Para **fotos**, a imagem vai para o GPT-5.4-mini junto com a `description`, quando enviada, delimitada em `<user_note>` (com `<`/`>` neutralizados). A nota acrescenta itens não visíveis e corrige identidade/quantidade dos visíveis, dentro do plausível para a imagem; ela é tratada como dado, nunca como instrução, e não monta a refeição sozinha se a foto não mostra comida;
-11. Para **áudios**, transcreve via GPT-4o-transcribe (o `gpt-4o-mini-transcribe` trocava "cem" por "cinco" num áudio real do iPhone; idioma e prompt de contexto não corrigiam) e envia a transcrição ao GPT-5.4-mini com o mesmo prompt da refeição por texto (`getTextMealPrompt`, variante de áudio), dentro de `<user_note>` com `<`/`>` neutralizados. A variante de áudio só muda a introdução: diz à IA que é uma fala transcrita, para ignorar hesitações e, quando o usuário se corrige, usar a versão corrigida. Menções que não dizem qual alimento era ("alguma coisa no pote") são removidas como no texto, sem aviso ao usuário (`unidentified` fica `null`). Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
-12. IA retorna dados estruturados dos alimentos (nome, quantidade, proteínas, carboidratos, gorduras) e um `mealType` opcional quando o usuário declara a refeição (no áudio ou na descrição da foto). Para **fotos**, também devolve `unidentified` (`DRINK`, `PACKAGED`, `COVERED`, `OTHER` ou `null`) quando há algo claramente presente cujo conteúdo não dá para ver e a nota não explica, e marca cada alimento com `unidentifiedKind` (`null` quando identificado). O `MealAiGateway` remove os alimentos marcados (log `[UNIDENTIFIED]`) e, se `unidentified` veio `null`, usa a categoria do primeiro alimento removido; se nenhum alimento sobrar, a refeição vira `REJECTED` (`NO_FOOD_DETECTED`), com estorno de cota;
-13. Backend mantém no máximo 30 itens (`Meal.MAX_FOODS`, o mesmo teto do texto e do "Adicionar item"), calcula calorias, define `name`/`icon` (via `MealNamingService`: horário no fuso do usuário ou `mealType` declarado) e atualiza o DynamoDB com status `SUCCESS`;
-14. Em falha transitória, a 1ª tentativa volta para `QUEUED`; a 2ª falha marca `FAILED`, **estorna a cota** e remove o arquivo do S3. A 3ª entrega da SQS serve para cleanup; falhas inesperadas que esgotam as entregas vão para a Dead Letter Queue e disparam alarme por email.
-
-### 3. Refeição presa (checagem de 15 min)
-15. A mensagem publicada no passo 2 fica invisível por 900s (`Meal.UPLOAD_CHECK_DELAY_SECONDS`, máximo do SQS; o Presigned POST expira em 5 min) e então é consumida pela Lambda `checkMealUpload`;
-16. Ela lê a refeição com leitura consistente. Em `UPLOADING` (arquivo nunca chegou, ou o gatilho do S3 falhou) ou em `QUEUED` com `attempts = 0` (a publicação na `MealsQueue` falhou, ou a fila acumulou mais de ~10 min), marca `FAILED`, **estorna a cota** (mês e dia, na mesma transação do passo 14) e remove o arquivo do S3, se existir. Em qualquer outro status, ou se a refeição não existir, não faz nada;
-17. A escrita é condicionada ao status lido, então um upload que termina no último segundo não é estornado. Erros voltam para a fila (3 entregas) e depois vão para a `MealUploadCheckDLQ`, com alarme por email.
-
-### 4. Refeição por texto (síncrona)
-Não passa por S3, SQS nem `processMeal`: `POST /meals/text` resolve tudo na própria request (Lambda com `timeout: 29`).
-1. Checa a cota do plano antes de chamar a IA (Free: `403 FREE_QUOTA_EXCEEDED`; Pro: `429 DAILY_MEAL_LIMIT_REACHED`);
-2. Envia o texto ao GPT-5.4-mini (prompt `getTextMealPrompt`) dentro de `<user_note>`, com `<`/`>` neutralizados e tratado como dado. A IA devolve os alimentos e o `mealType` declarado; menções que não dizem qual alimento era ("alguma coisa no pote", "um pacotinho") vêm marcadas com `unidentifiedKind` e são removidas (log `[UNIDENTIFIED]`);
-3. Sem nenhum alimento, responde `422 NO_FOOD_IDENTIFIED` **sem consumir cota**;
-4. Consome a cota de forma atômica, calcula calorias, define `name`/`icon` e grava a refeição já em `SUCCESS` (`inputType: TEXT`, sem arquivo). Se a gravação falhar, a cota é estornada.
-
-## Validação, gate e rejeição
-
-### Validação do arquivo
-
-- **Fotos**: apenas JPEG real (assinatura `FF D8 FF`), até **10 MB** e com dimensões válidas. O app normaliza outras imagens para JPEG antes do upload;
-- **Áudios**: apenas M4A ou WebM, até **2 MB** e entre **1 e 32 segundos**; o container e a assinatura do arquivo são conferidos. A duração vem do `music-metadata`; quando um WebM não traz a duração no cabeçalho (gravação do Safari no iPhone e no Mac), ela é calculada pelo timecode do último bloco de áudio (`src/shared/utils/getWebmDurationSeconds.ts`);
-- Arquivo inválido, corrompido ou fora dos limites vira `REJECTED` com `rejectionReason: INVALID_FILE`, a cota é estornada e o arquivo é removido do S3.
-
-### Gate de foto (Cloudflare Workers AI)
-
-- Roda apenas para fotos, antes da chamada de visão da OpenAI;
-- Usa o modelo `@cf/cloudflare/clef-flash` e o score `result.answers.is_food_or_drink.noul`;
-- `score < MEAL_GATE_REJECT_THRESHOLD` → `REJECTED` com `rejectionReason: NOT_A_MEAL`, cota estornada e arquivo removido;
-- É **fail-open**: sem credenciais, timeout (8s), `429`, `5xx`, resposta inválida ou imagem acima de 4 MiB/16 MP, o gate retorna `SKIP` e a OpenAI processa normalmente;
-- Configuração: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_AI_API_TOKEN` (permissões `Workers AI - Read` e `Workers AI - Edit`), `MEAL_GATE_ENABLED` (default `true`) e `MEAL_GATE_REJECT_THRESHOLD` (default `0.30`).
-
-### Status e estorno
-
-| Status | Quando acontece | Cota | `inputFileUrl` |
-| ------ | --------------- | ---- | -------------- |
-| `REJECTED` | Arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos | Estornada | `null` |
-| `FAILED` | Falha de plataforma após 2 tentativas (OpenAI, timeout, S3, resposta inválida), ou refeição presa em `UPLOADING`/`QUEUED` 15 min depois do `create-meal` | Estornada | `null` |
-| `DELETED` | Usuário excluiu a refeição (`DELETE /meals/{id}`) | Não estornada | some da API (`404`) |
-
-Os motivos de rejeição são `INVALID_FILE`, `NOT_A_MEAL` e `NO_FOOD_DETECTED`. Uma tentativa rejeitada ou com falha continua contando no rate limit de `POST /create-meal`.
-
-O estorno é feito numa transação (`TransactWriteItems`) que muda o status da refeição e decrementa o contador mensal juntos. Cada operação usa seu próprio `ClientRequestToken` (`<mealId>#fail#<tentativa>` / `<mealId>#reject#<tentativa>` / `<mealId>#upload` para a refeição presa em `UPLOADING`; o DynamoDB aceita no máximo 36 caracteres), então um retry da fila não colide com outra operação na janela de idempotência do DynamoDB. Se o contador já estiver em zero, a refeição é marcada com `quotaRefunded: false`.
-
-## Fluxo de Cadastro por E-mail
-
-```text
-App                                   API                                   Cognito / DynamoDB
- | POST /auth/sign-up                  |                                      |
- |------------------------------------▶| beta gate + e-mail em minúsculas      |
- |                                     | SignUp (UNCONFIRMED) ---------------▶ | envia código
- |                                     | grava PendingSignUp (TTL 24h) ------▶ | perfil + termos
- |◀------- 201 requiresConfirmation ---|                                      |
- | POST /auth/confirm-sign-up          |                                      |
- | { email, confirmationCode, password}|                                      |
- |------------------------------------▶| ConfirmSignUp ----------------------▶ | CONFIRMED
- |                                     | testa a senha (InitiateAuth)         |
- |                                     | cria Account + Profile + Goal ------▶ | (aplica o PendingSignUp)
- |◀------- 200 { passwordResetRequired }                                      |
- | POST /auth/sign-in                  |                                      |
-```
-
-- **Cadastro**: `POST /auth/sign-up` cria o usuário `UNCONFIRMED` no Cognito e guarda perfil e aceite de termos num `PendingSignUp` (TTL de 24h). A `Account` só é criada depois da confirmação. Responde `201 { requiresConfirmation: true, alreadyPending }`;
-- **Cadastro repetido**: se o e-mail ainda está `UNCONFIRMED`, o usuário pendente é apagado e recriado. A senha, o perfil e os termos novos passam a valer, com código novo e TTL renovado (`alreadyPending: true`). E-mail já confirmado → `409 EMAIL_ALREADY_IN_USE`;
-- **Confirmação**: `POST /auth/confirm-sign-up` recebe código **e senha**. O código prova a posse do e-mail, mas não quem escolheu a senha (qualquer pessoa pode cadastrar um e-mail ainda não confirmado). Depois de confirmar, a API testa a senha:
-  - senha certa → aplica o `PendingSignUp` e cria a conta já com onboarding → `200 { passwordResetRequired: false }`;
-  - senha errada (ou qualquer falha no teste, *fail-closed*) → troca a senha por uma aleatória, descarta o `PendingSignUp` e cria a conta sem onboarding → `200 { passwordResetRequired: true }`. O usuário define uma senha nova pelo "esqueci a senha";
-- **Conta já confirmada**: a confirmação não grava nada; responde `200` se a conta existe e `400 INVALID_CONFIRMATION_CODE` se não existe;
-- **Reenvio**: `POST /auth/resend-confirmation-code` responde `204` sempre (não revela se o e-mail existe) e só reenvia para usuários `UNCONFIRMED`;
-- **Login antes de confirmar**: `POST /auth/sign-in` responde `403 EMAIL_NOT_CONFIRMED`;
-- **Recuperação de conta incompleta**: se o Cognito confirmou o usuário mas a gravação da conta falhou, `GET /me` (chamado logo após o login) cria a conta a partir do `PendingSignUp`. Só acontece quando a conta não existe, o e-mail está verificado e o `internalId` do usuário bate com o do token;
-- **Erros do Cognito**: limite de tentativas → `429 TOO_MANY_ATTEMPTS`; falha no envio do código → `502 CODE_DELIVERY_FAILED`;
-- **E-mail com maiúsculas**: o pool do Cognito diferencia maiúsculas. Novos usuários são gravados em minúsculas; login e recuperação de senha tentam o e-mail normalizado e, se não existir, o digitado (contas antigas);
-- **Troca de e-mail**: o pool exige verificação antes de aplicar um e-mail novo (`AttributesRequireVerificationBeforeUpdate`), e o provisionamento de conta busca pelo `internalId` imutável, nunca pelo e-mail.
-
-## Classificação da Refeição (nome e ícone)
-
-O nome e o ícone **não** são definidos pela IA: a API os deriva do **horário da refeição interpretado no fuso do usuário** (o `timeZone` IANA enviado no `POST /create-meal`, com fallback `America/Sao_Paulo`). Quando o usuário **declara explicitamente** a refeição no áudio, no texto ou na descrição da foto (por exemplo, "almocei", "estou jantando", "foi meu almoço"), a IA devolve um `mealType` opcional que **sobrepõe** o horário; menções genéricas ou negadas ficam como `null` e caem no horário.
-
-| Horário (local) | Nome            | Ícone | `mealType` da IA  |
-| --------------- | --------------- | ----- | ----------------- |
-| 04:00–10:59     | Café da manhã   | ☕    | `BREAKFAST`       |
-| 11:00–14:59     | Almoço          | 🍽️    | `LUNCH`           |
-| 15:00–17:59     | Lanche da tarde | 🍎    | `AFTERNOON_SNACK` |
-| 18:00–22:59     | Jantar          | 🍲    | `DINNER`          |
-| 23:00–03:59     | Ceia            | 🌙    | `SUPPER`          |
-
-- O horário é calculado com `Intl` no fuso recebido; `timeZone` inválido ou ausente cai no default `America/Sao_Paulo`.
-- A lógica vive em `MealNamingService` (`application/services/`); a IA retorna apenas os alimentos/macros e o `mealType` opcional.
-- O mesmo fuso define o **dia** da refeição: o `GSI1PK` (`MEAL#<accountId>#YYYY-MM-DD`) usa a data local do `createdAt` no `timeZone` salvo, com o mesmo fallback. A regra de fuso e o cálculo do dia ficam em `shared/utils/timeZone.ts`, usados por `MealNamingService` e `MealItem`, o que garante que nome e dia nunca divergem.
-
-## Fluxo de Autenticação OAuth (Google)
-
-O login com Google usa o fluxo **Authorization Code + PKCE**:
-
-```text
-Frontend                          Cognito                       API (Lambda)
-   |  1. Gera code_verifier        |                              |
-   |  2. Redireciona para login    |                              |
-   |------------------------------▶|  /oauth2/authorize            |
-   |                               |  3. Usuário autentica no      |
-   |                               |     Google                   |
-   |                               |  4. PreSignUp_ExternalProvider|
-   |                               |     cria usuário nativo      |
-   |                               |     ("shadow") + vincula     |
-   |                               |     provider                 |
-   |◀--------- 5. code ------------|                              |
-   |  6. POST /auth/oauth/callback |                              |
-   |----------------------------------------------------------▶|
-   |                               |  7. Troca code + verifier por |
-   |                               |     tokens (PKCE)            |
-   |                               |  8. Cria Account (isOnboarded:
-   |                               |     false) se email não      |
-   |                               |     registrado               |
-   |◀--------- 9. tokens + isOnboarded ------------------------|
-   |  10. Se isOnboarded = false                               |
-   |      POST /auth/complete-onboarding                       |
-   |----------------------------------------------------------▶|
-   |                               |  11. Cria Profile + Goal e   |
-   |                               |      marca isOnboarded=true  |
-   |                               |      (TransactWrite)         |
-   |◀--------------------- 12. 204 ----------------------------|
-```
-
-1. O frontend gera um `code_verifier` aleatório e redireciona o usuário para o Cognito (`/oauth2/authorize`) com o `code_challenge` (PKCE);
-2. O usuário autentica com a conta Google e o Cognito redireciona de volta com um `code`. O app manda `prompt=select_account` para o Google mostrar o seletor de contas; o Cognito só repassa esse parâmetro no **managed login** (`ManagedLoginVersion: 2` no `UserPoolDomain`, com um `ManagedLoginBranding` padrão). No hosted UI clássico ele é ignorado e o Google entra direto na última conta usada;
-3. No primeiro login com Google, o trigger `PreSignUp_ExternalProvider` cria um usuário nativo "shadow" no Cognito (username = email, atributo `custom:internalId`) e vincula o Identity Provider a esse usuário;
-4. O frontend envia `code`, `redirectUri` e `codeVerifier` para `POST /auth/oauth/callback`;
-5. O backend troca o `code` pelos tokens, deriva identidade do token (exige `email_verified`) e, se ainda não houver `Account` para o `internalId`, **cria a `Account` no DynamoDB**. Se existir um `PendingSignUp` (cadastro por e-mail sem código, seguido de login com Google), ele é aplicado e a conta já nasce com onboarding; caso contrário, `isOnboarded: false` — retorna `200` com `{ accessToken, refreshToken, isOnboarded }`. O access token já contém o claim `internalId`;
-6. **Usuário novo** (`isOnboarded: false`): o frontend chama `POST /auth/complete-onboarding` com o `accessToken`. O backend deriva identidade do token, **reutiliza a `Account` criada no callback**, cria `Profile` e `Goal` e marca `isOnboarded: true` atomicamente (`TransactWriteCommand`). Responde `204`;
-7. Como o claim `internalId` já vem no primeiro token (atributo `custom:internalId` injetado pelo trigger `preTokenGeneration`), não é necessária uma troca de token extra após o onboarding.
-
-**Observações:**
-- O `complete-onboarding` é **idempotente**: reexecuta a gravação de `Profile`/`Goal` e o flag com o mesmo `accountId` (retry seguro);
-- Erros: `400 INVALID_GRANT` se a troca de code falhar ou faltar dado no token; se a conta existir mas pertencer a outro `externalId`, `409 EMAIL_ALREADY_IN_USE`; se o token for válido mas não houver `Account` registrada, `404 ACCOUNT_NOT_FOUND`;
-- A troca de código tem timeout de 5 segundos;
-- Com o beta fechado, o trigger `PreSignUp` recusa e-mails fora da allowlist e o Cognito redireciona de volta com `error_description` contendo `BETA_ACCESS_DENIED` (o app mostra a mensagem do beta).
-
-## Fluxo de Planos e Pagamento (Billing)
-
-Gateway **Asaas** (sandbox: `api-sandbox.asaas.com`), atrás do contrato `IPaymentGateway` — os use cases nunca citam o gateway:
-
-```text
-TRIAL (dia 0, sem gateway):
-  POST /billing/trial ──► Subscription { status: TRIALING, trialEndsAt: +7d,
-      planId: PRO_MONTHLY }   (1 por conta · Pro imediato · 20/dia)
-
-CHECKOUT:
-  POST /billing/checkout ──► Asaas Checkout ──► { checkoutUrl }
-      mensal = RECURRENT + só cartão     (1ª cobrança imediata)
-      anual  = DETACHED  + Pix/cartão    (pagamento único; renovação via app)
-  App abre checkoutUrl no browser ──► usuário paga
-
-WEBHOOK (fonte da verdade):
-  Asaas ──POST /billing/webhooks/asaas──► allowlist de IP (403) ──►
-      rate limit IP 120/60s (429) ──► header asaas-access-token ──►
-      PAYMENT_CONFIRMED / RECEIVED ──► status ACTIVE + paidUntil (+ciclo) ──►
-      app invalida ['accounts'] e reflete via GET /me
-
-RECONCILIAÇÃO (rede de segurança do webhook, a cada 1h com o Asaas de produção):
-  EventBridge ──► Lambda reconcilePayments ──► GET /v3/payments
-      (status CONFIRMED e RECEIVED, vencimento nos últimos 35 dias) ──►
-      mesmo join e mesma ativação do webhook (WebhookUseCase.applyEvent) ──►
-      ativa só o pagamento que ainda não está coberto pelo paidUntil ──►
-      e-mail (SNS) se ativou algo, achou pagamento sem conta ou falhou
-
-EXPIRAÇÃO (lazy, sem scheduler):
-  resolveEffectivePlan: trial/pago vencido ──► FREE + cota 20/mês
-```
-
-**Observações:**
-- **Idempotência**: dedup por `event.id` na RateLimitTable (TTL 14d = retenção de reenvio do Asaas) + guards de transição (`paidUntil` só avança · `CHECKOUT_PAID` é no-op);
-- **Endurecimento da rota pública**: 3 camadas: allowlist dos **IPs oficiais do Asaas** (env `ASAAS_WEBHOOK_ALLOWED_IPS`; default = 4 IPs de produção, `*` desabilita em sandbox/dev; checada no adapter **antes** de tudo → `403`), token `asaas-access-token` (`502` se inválido), rate limit por IP 120/60s (`429` + `Retry-After`). O `reservedConcurrency: 5` em `sls/functions/billing.yml` é o teto de custo/concorrência da função do webhook (exige cota de concorrência de Lambda acima do mínimo da conta; nas duas contas a cota é 1000);
-- **Join do webhook com a conta**: via `externalReference` (`"<accountId>#<planId>"`) e índice reverso `GATEWAY#<id>` na MainTable (testado com payload real pago no sandbox);
-- **Pagamento de assinatura já cancelada**: um `PAYMENT_CONFIRMED`/`RECEIVED` da **mesma** assinatura do Asaas que o usuário cancelou (`gatewayRefs.subscriptionId`) não reativa: mantém `CANCELED` e só avança o `paidUntil` quando o ciclo pago é mais novo. Cobre o `PAYMENT_RECEIVED` do cartão, que chega cerca de 30 dias depois do `PAYMENT_CONFIRMED`, e vale para o webhook e para a reconciliação. Pagamento de uma assinatura nova (re-assinatura) reativa normalmente. Todo pagamento confirmado também grava o `planId` do plano pago (quem fez o trial e pagou o anual passa a `PRO_YEARLY`);
-- **Renovação adiantada do anual**: pagamento do anual feito antes do `paidUntil` atual soma um ano a partir desse `paidUntil` (em vez de contar do vencimento do pagamento), para o assinante não perder os dias restantes; depois de vencido, conta do vencimento do pagamento. A soma só acontece quando `vencimento + 1 ano` passa do `paidUntil` atual, então um segundo evento do mesmo pagamento (o `PAYMENT_RECEIVED` do cartão, a reconciliação) não soma de novo. Limite conhecido: dois pagamentos de anual com menos de um ano entre os vencimentos, ambos antes do `paidUntil`, contam como um só (o app só oferece renovar nos últimos 30 dias). O mensal não mudou. Não há e-mail de aviso de vencimento: o aviso é só no app, calculado do `GET /me`;
-- **Reconciliação**: a Lambda `reconcilePayments` lista no Asaas os pagamentos `CONFIRMED`/`RECEIVED` com vencimento nos últimos 35 dias e aplica cada um pelo `WebhookUseCase.applyEvent`. Um pagamento é pulado quando a assinatura já tem `paidUntil >= vencimento + ciclo` (por isso quem pagou e cancelou não é reativado). Os pagamentos são processados em ordem de vencimento, para o primeiro pagamento de uma assinatura criar o vínculo antes da renovação. Cada pagamento conferido ganha um marcador de 45 dias (janela + 10) na RateLimitTable (`RL#webhook-event#reconcile-payment#<payId>`) e não é relido. Quando ativa algo, acha um pagamento pago sem conta correspondente ou algum pagamento dá erro, publica um e-mail no `DQLAlarmTopic` (env `ALERT_TOPIC_ARN`, injetada pelo Serverless), e o alarme `ReconcilePaymentsErrorsAlarm` (métrica `Errors` da Lambda, ações só em prod) cobre a execução que falha sem e-mail próprio: listagem do Asaas com erro, falha ao publicar no SNS, timeout e erro ao iniciar (o motivo fica no log). O agendamento (`rate(1 hour)`) liga sozinho quando `ASAAS_BASE_URL` é `https://api.asaas.com` e fica desligado no sandbox, em qualquer stage (`sls/config/reconcileScheduleEnabled.js`); com o sandbox roda sob demanda: `npx serverless invoke -f reconcilePayments` (aceita `--data '{"lookbackDays":45}'` para uma janela maior, até 365 dias, útil também depois de uma falha longa do webhook). Fora do escopo: `PAYMENT_OVERDUE` e cancelamentos perdidos;
-- **Cotas**: Free 20/mês e Pro 20/dia, detalhadas em [Cotas de refeição](#cotas-de-refeição);
-- Trial é **1 por conta** (`409 TRIAL_NOT_AVAILABLE`); cancelar trial é downgrade local (sem gateway), assinatura paga cancela no gateway e mantém `PRO` até `paidUntil` + carência de 3 dias.
-
-### Cotas de refeição
-
-O `MealQuotaService` controla as cotas com contadores atômicos e condicionais na RateLimitTable (`PK = RL#account-monthly#<id>` e `RL#account-daily#<id>`). Foto, áudio e texto consomem 1 refeição; o "Adicionar item" não consome.
-
-| Plano | Limite | Contador (SK) | Ao estourar |
-|---|---|---|---|
-| Free | 20 refeições por mês (mês em UTC) | `YYYY-MM` | `403 FREE_QUOTA_EXCEEDED` |
-| Pro (pago ou trial) | 20 refeições por dia (dia em `America/Sao_Paulo`) | `YYYY-MM-DD` no diário + `YYYY-MM#PRO` no mensal, sem limite, só para estatística | `429 DAILY_MEAL_LIMIT_REACHED` |
-
-- O contador do Free conta só as refeições feitas no Free; as do Pro (trial ou pago) vão para `YYYY-MM#PRO`. Quem volta ao Free no meio do mês tem as 20 menos o que já usou no Free naquele mês: trial logo depois do cadastro → 20 cheias; usou as 20 do Free, fez o trial e voltou no mesmo mês → 0 até o mês seguinte. O mesmo vale para o Pro pago que cancela, deixa de pagar ou tem o anual vencido.
-- A refeição grava `quotaMonth` e `quotaDay` (este só no Pro). O estorno (`REJECTED`, `FAILED`, incluindo a refeição presa, ou falha ao gravar a refeição) devolve os dois contadores no bucket gravado, mesmo que aconteça no dia seguinte.
-- "Adicionar item": no Free sem cota do mês responde `403 FREE_QUOTA_EXCEEDED`; no Pro não é bloqueado pelo limite diário (já tem o teto de 5 adições por refeição e 20/h).
-- Os rate limits por hora ([Rate Limit](#rate-limit)) continuam valendo junto com as cotas.
-- `GET /me` devolve `mealQuota` (mensal) e `dailyMealQuota` (só Pro).
+| Tema | Página |
+|---|---|
+| Peças da AWS e inventário de Lambdas | [Visão geral](docs/guide/01-visao-geral.md) |
+| Camadas, DI e ciclo de vida da request | [Arquitetura do código](docs/guide/02-arquitetura-codigo.md) |
+| Tabelas, chaves e padrões de acesso | [Modelo de dados](docs/guide/03-modelo-de-dados.md) |
+| Estados de refeição, assinatura e conta | [Máquinas de estado](docs/guide/04-maquinas-de-estado.md) |
+| Códigos de erro, cotas e rate limit | [Erros, cotas e rate limit](docs/guide/05-erros-cotas-rate-limit.md) |
+| Alarmes, logs e runbooks | [Operação](docs/guide/06-operacao.md) |
+| Refeição por foto ou áudio (upload, fila, gate, IA, estorno) | [Fluxo](docs/guide/fluxos/refeicao-foto-audio.md) |
+| Refeição por texto | [Fluxo](docs/guide/fluxos/refeicao-texto.md) |
+| Listar, adicionar, remover e restaurar itens, excluir | [Fluxo](docs/guide/fluxos/refeicao-itens.md) |
+| Cadastro por e-mail | [Fluxo](docs/guide/fluxos/auth-cadastro-email.md) |
+| Login com Google | [Fluxo](docs/guide/fluxos/auth-google-oauth.md) |
+| Login, refresh e senha | [Fluxo](docs/guide/fluxos/auth-login-senha.md) |
+| Perfil e meta | [Fluxo](docs/guide/fluxos/perfil-e-meta.md) |
+| Planos, checkout e webhook do Asaas | [Fluxo](docs/guide/fluxos/billing.md) |
+| Reconciliação de pagamentos | [Fluxo](docs/guide/fluxos/billing-reconciliacao.md) |
 
 ## Pré-requisitos
 
@@ -467,7 +242,7 @@ functions:
 
 O endpoint base da API será: `https://xxx.execute-api.sa-east-1.amazonaws.com`
 
-Para produção, use `AWS_PROFILE=nacal-prod yarn deploy:prod`: o script valida `.env.prod` e executa `sls deploy --stage prod`. O checklist completo está em `../docs/producao-nacal.md`.
+Para produção, use `AWS_PROFILE=nacal-prod yarn deploy:prod`: o script valida `.env.prod` e executa `sls deploy --stage prod`. O checklist da conta de produção é um documento interno, fora deste repo: peça ao responsável pelo projeto.
 
 `yarn check:prod` (rodado pelo `deploy:prod`) recusa, entre outros:
 - chaves do `.env` ausentes no `.env.prod` (herdariam valores de dev) e valores de exemplo;
@@ -546,48 +321,9 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 ## Rate Limit
 
-Proteção contra abuso e excesso de requests, implementada **em código** (sem AWS WAF): o decorator `@RateLimit` marca os controllers, o `lambdaHttpAdapter` aplica o enforcement centralizado e contadores **atômicos e condicionais** no DynamoDB (`RateLimitTable`) controlam a janela fixa. Requests bloqueados **não gravam** no banco, e as chaves de IP, de conta e de e-mail são **por rota** (`RL#ip#<rota>#<ip>`, `RL#account#<rota>#<id>` e `RL#email#<rota>#email#<email>` — rotas não disputam o mesmo contador; o e-mail é normalizado com `trim` + minúsculas).
+Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores atômicos na `RateLimitTable`. Estourar o limite responde `429 RATE_LIMIT_EXCEEDED` com o header `Retry-After`. Os limites de cada rota estão em [Erros, cotas e rate limit](docs/guide/05-erros-cotas-rate-limit.md#rate-limit).
 
-**Custo:** o bloqueio ocorre dentro da Lambda, então um `429` ainda custa API Gateway (~$1,59/1M na `sa-east-1`) + invocação Lambda ($0,20/1M). Requests bloqueados **não** gravam no DynamoDB e **não** chamam Cognito/OpenAI — o volume atual fica coberto pelo free tier (1M requests/mês). Bloquear antes da invocação (WAF rate-based, ~$6/mês) fica como evolução futura.
-
-**Limites por rota:**
-
-| Rota | Escopo | Limite |
-|---|---|---|
-| `POST /auth/sign-up` | IP | 5 / 15min |
-| `POST /auth/sign-in` | IP + email | 10 / 15min cada |
-| `POST /auth/confirm-sign-up` | IP + email | 10 / 15min cada |
-| `POST /auth/resend-confirmation-code` | IP + email | 3 / 15min cada |
-| `POST /auth/refresh-token` | IP | 60 / 15min |
-| `POST /auth/forgot-password` | IP + email | 5 / 15min (IP) e 5 / 1h (email) |
-| `POST /auth/confirmation-forgot-password` | IP | 10 / 15min |
-| `POST /auth/oauth/callback` | IP | 30 / 15min |
-| `POST /auth/complete-onboarding` | IP | 30 / 15min |
-| `POST /create-meal` | conta | 10 / 1h |
-| `POST /meals/text` | conta | 10 / 1h |
-| `POST /meals/{id}/items` | conta | 20 / 1h |
-| `DELETE /meals/{id}` | conta | 30 / 1h |
-| `DELETE /meals/{id}/items/{itemId}` | conta | 60 / 1h |
-| `POST /meals/{id}/items/{itemId}/restore` | conta | 60 / 1h |
-| `POST /billing/trial` | conta | 5 / 1h |
-| `POST /billing/webhooks/asaas` | IP | 120 / 60s |
-
-`POST /create-meal` conta cada tentativa, inclusive quando a refeição termina em `REJECTED`. `POST /meals/text` também conta cada tentativa, inclusive as que terminam em `422 NO_FOOD_IDENTIFIED`, e tem contador próprio (não divide o limite com o `create-meal`).
-
-**Resposta `429`:**
-
-```json
-{
-  "error": {
-    "code": "RATE_LIMIT_EXCEEDED",
-    "message": "..."
-  }
-}
-```
-
-com header `Retry-After` em segundos.
-
-### Exemplos de Uso
+## Exemplos de Uso
 
 #### Sign Up -> `/auth/sign-up`
 
@@ -1189,13 +925,7 @@ com header `Retry-After` em segundos.
 
 ## Eventos
 
-### Triggers Cognito
-
-| Trigger            | Função                      | Descrição                                                                |
-| ------------------ | --------------------------- | ------------------------------------------------------------------------ |
-| PreSignUp          | `preSignUpTrigger`          | Aplica o beta fechado (cadastro por e-mail e Google); em `PreSignUp_ExternalProvider` cria usuário nativo "shadow" (`custom:internalId`) ou reaproveita o nativo existente (confirmando-o se estava pendente) e vincula o Identity Provider. Cadastros por e-mail **não** são mais auto-confirmados |
-| PreTokenGeneration | `preTokenGenerationTrigger` | Injeta o claim `internalId` no access token a partir de `custom:internalId` |
-| CustomMessage      | `customMessageTrigger`      | Monta em HTML (com modo escuro) os e-mails de confirmação de cadastro, reenvio de código e recuperação de senha, a partir dos templates em `src/infra/emails/`. Os demais `triggerSource` ficam com o texto padrão do Cognito |
+Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação estão no [inventário de Lambdas](docs/guide/01-visao-geral.md#disparadas-por-evento).
 
 ### E-mails transacionais
 
@@ -1204,21 +934,6 @@ com header `Retry-After` em segundos.
 - Limites do Cognito: corpo com até 20.000 caracteres e assunto com até 140. Acima dos 20.000, o Cognito descarta a mensagem sem erro e manda o texto padrão; por isso o trigger usa a versão em texto puro quando o HTML passa do limite. O corpo precisa conter o `codeParameter` (`{####}`) e só é aceito com `EmailSendingAccount: DEVELOPER`;
 - Preview local: `npx tsx scripts/previewEmails.ts [pasta]` grava o HTML e o texto de cada e-mail e um `index.html` com os temas claro e escuro lado a lado, e mostra o tamanho de cada HTML. Sem pasta, grava em `$TMPDIR/nacal-email-preview`;
 - Para testar de verdade: `sls deploy function -f customMessageTrigger --stage dev` e um cadastro ou "esqueci a senha" em dev.
-
-### Eventos S3
-
-| Evento        | Função                   | Descrição                                                                                        |
-| ------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| ObjectCreated | `newMealUploadedTrigger` | Quando um arquivo é enviado ao S3, lê metadados, atualiza status para QUEUED e publica na fila SQS |
-
-### Filas SQS
-
-| Fila       | Função        | Descrição                                                         |
-| ---------- | ------------- | ----------------------------------------------------------------- |
-| MealsQueue | `processMeal` | Consome mensagens e processa refeições via OpenAI; alarme quando a mensagem mais antiga passa de 2 min |
-| MealsDLQ   | --            | Dead Letter Queue para falhas inesperadas que esgotaram as entregas da fila |
-| MealUploadCheckQueue | `checkMealUpload` | Mensagem atrasada 15 min por refeição de foto/áudio; marca `FAILED` e estorna a cota se a refeição ficou presa |
-| MealUploadCheckDLQ   | --                | Dead Letter Queue da checagem, com alarme |
 
 ## Tecnologias Utilizadas
 
@@ -1342,63 +1057,7 @@ com header `Retry-After` em segundos.
 
 ## Arquitetura do Código
 
-```
-src/
-├── kernel/                    # Camada de framework/DI
-│   ├── decorators/            # @Injectable(), @Schema(), @RateLimit(), @IpAllowlist()
-│   └── di/                    # Registry (container de DI singleton)
-│
-├── shared/                    # Utilitários compartilhados
-│   ├── config/                # AppConfig, validação de env (Zod)
-│   └── utils/                 # generateUniqueId, ValueOf
-│
-├── main/                      # Entry points (handlers Lambda)
-│   ├── adapters/              # Adaptadores Lambda -> Controller/EventHandler/SQSHandler
-│   ├── utils/                 # Body parser, response builders
-│   └── functions/             # Handlers organizados por domínio
-│       ├── auth/              # signUp, signIn, refreshToken, forgotPassword, triggers
-│       ├── meal/              # createMeal, listMeals, getMealById, addMealItems, processMeal, uploadTrigger
-│       ├── account/           # me
-│       ├── profile/           # updateProfile
-│       └── billing/           # plans, trial, checkout, cancel, webhookAsaas
-│
-├── application/               # Lógica de negócio
-│   ├── contracts/             # Controller, IEventHandler, ISQSHandler, IPaymentGateway
-│   ├── entities/              # Account, Profile, Goal, Meal, Subscription
-│   ├── services/              # GoalCalculator, RateLimitService, MealQuotaService,
-│   │                          # MealNamingService, MealFileValidationService
-│   ├── useCases/              # Use cases organizados por domínio
-│   ├── controllers/           # Controllers com schemas Zod
-│   ├── presenters/            # MealPresenter (formato de saída da refeição)
-│   ├── query/                 # Queries diretas ao DynamoDB
-│   ├── events/                # MealUploadedEventHandler
-│   ├── queues/                # MealQueueConsumer
-│   └── errors/                # ErrorCode, ApplicationError, HttpError, MealRejectedError
-│
-└── infra/                     # Integrações externas
-    ├── clients/               # Clients AWS SDK (DynamoDB, Cognito, S3, SQS)
-    ├── databases/dynamodb/    # Repositories + Item mappers + Unit of Work
-    ├── gateways/              # AuthGateway, MealFileStorageGateway, MealQueueGateway,
-    │                          # AsaasPaymentGateway
-    ├── ai/                    # Integrações de IA
-    │   ├── gateways/          # MealAiGateway (OpenAI) e MealGateGateway (Clef-flash)
-    │   └── prompts/           # Prompts de análise (PT-BR)
-    ├── emails/                # Layout base (emailLayout) e templates dos e-mails transacionais
-    └── utils/                 # downloadByURL
-```
-
-### Padrões Arquiteturais
-
-- **Clean Architecture / Hexagonal**: Separação clara entre `application` (negócio), `infra` (integrações), `main` (entry points), `kernel` (framework) e `shared` (utilitários);
-- **Injeção de Dependência customizada**: Container DI singleton (`Registry`) com decorator `@Injectable()` usando `reflect-metadata` para resolução automática de construtores;
-- **Schema Validation Decorator**: `@Schema(zodSchema)` nos controllers para validação automática do request body;
-- **Controller Pattern**: Classe abstrata `Controller<'public' | 'private'>` distinguindo rotas autenticadas vs públicas;
-- **Rate Limit declarativo**: decorator `@RateLimit` (IP/email/conta) nos controllers + enforce centralizado no `lambdaHttpAdapter` com contadores atômicos condicionais no DynamoDB;
-- **IP Allowlist declarativo**: decorator `@IpAllowlist((config) => …)` apontando a lista de IPs permitida + enforcement no `lambdaHttpAdapter` (403 antes do rate limit), usado pelo webhook Asaas com os IPs oficiais do gateway (env `ASAAS_WEBHOOK_ALLOWED_IPS`);
-- **Unit of Work**: Transações DynamoDB (`TransactWriteCommand`) para escrita atômica de múltiplas entidades;
-- **Event-Driven Processing**: S3 Event -> SQS -> Lambda para processamento assíncrono de refeições;
-- **Single-Table DynamoDB**: Todas as entidades em uma tabela com chaves compostas e GSIs;
-- **Gateway Pattern**: Camada de abstração para serviços externos (Auth, Storage, Queue, AI);
+Camadas (`kernel`, `shared`, `main`, `application`, `infra`), mapa das pastas, injeção de dependência, adapters e o passo a passo para criar um endpoint: [Arquitetura do código](docs/guide/02-arquitetura-codigo.md).
 
 ## Comandos Úteis
 

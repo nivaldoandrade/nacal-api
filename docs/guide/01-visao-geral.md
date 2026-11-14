@@ -1,0 +1,189 @@
+# 01 · Visão geral
+
+A API do NaCal é um backend **serverless e orientado a eventos** na AWS (`sa-east-1`), escrito em TypeScript e implantado com o Serverless Framework v4. O usuário registra refeições por **foto, áudio ou texto**, a IA identifica os alimentos e calcula os macros, e a API guarda tudo e controla as metas, as cotas e o plano pago.
+
+## Contexto: com quem a API conversa
+
+```mermaid
+flowchart LR
+    user(["👤 Usuário"])
+    app["📱 App NaCal<br/>Expo / React Native + PWA"]
+
+    subgraph aws["AWS · nacal-api"]
+        api["API NaCal<br/>API Gateway + Lambdas"]
+    end
+
+    google["Google<br/>login social"]
+    openai["OpenAI<br/>gpt-5.4-mini + gpt-4o-transcribe"]
+    cf["Cloudflare Workers AI<br/>gate de foto clef-flash"]
+    asaas["Asaas<br/>pagamentos"]
+    ses["Amazon SES<br/>e-mails do Cognito"]
+    dev(["🧑‍💻 Time<br/>alarmes por e-mail"])
+
+    user --> app
+    app -- "HTTPS + JWT" --> api
+    app -- "upload direto e leitura das fotos" --> aws
+    api -- "OAuth via Cognito" --> google
+    api -- "visão, transcrição e texto" --> openai
+    api -- "tem comida na foto?" --> cf
+    api -- "checkout, assinatura e consulta" --> asaas
+    asaas -- "webhook de pagamento" --> api
+    api -- "código de cadastro e de senha" --> ses
+    api -- "SNS: DLQs, reconciliação" --> dev
+```
+
+| Sistema externo | Para quê | Onde no código |
+|---|---|---|
+| **OpenAI** | Identificar alimentos na foto, transcrever áudio e interpretar texto | `src/infra/ai/gateways/MealAiGateway.ts` |
+| **Cloudflare Workers AI** | Gate barato que rejeita foto sem comida antes da OpenAI (falha aberta: se cair, a foto segue) | `src/infra/ai/gateways/MealGateGateway.ts` |
+| **Google** | Login social, via Cognito (o Google não é chamado direto) | `sls/resources/userPool.yaml` |
+| **Asaas** | Cobrança do plano Pro (checkout, assinatura e webhook) | `src/infra/gateways/AsaasPaymentGateway.ts` |
+| **SES** | O Cognito manda os e-mails de código pelo SES, com o HTML que a API monta | `src/infra/emails/` |
+
+## Containers: as peças da AWS
+
+```mermaid
+flowchart TB
+    app["📱 App"]
+
+    subgraph edge["Entrada"]
+        apigw["API Gateway HTTP API<br/>api.nacal.app"]
+        authz{{"JWT Authorizer<br/>Cognito"}}
+    end
+
+    subgraph identity["Identidade"]
+        cognito["Cognito User Pool<br/>+ managed login"]
+        triggers["Lambdas de trigger<br/>PreSignUp · PreTokenGeneration · CustomMessage"]
+    end
+
+    subgraph compute["Lambdas HTTP · por domínio"]
+        authFns["auth · 9"]
+        mealFns["meal · 8"]
+        billingFns["billing · 5"]
+        otherFns["me · profile · goal"]
+    end
+
+    subgraph async["Processamento assíncrono"]
+        s3[("S3<br/>MealsBucket")]
+        cdn["CloudFront<br/>CDN das refeições"]
+        uploaded["newMealUploadedTrigger"]
+        mealsQ[["SQS MealsQueue"]]
+        process["processMeal"]
+        checkQ[["SQS MealUploadCheckQueue<br/>mensagem com atraso de 15 min"]]
+        check["checkMealUpload"]
+        sched["EventBridge<br/>a cada 1 h"]
+        reconcile["reconcilePayments"]
+    end
+
+    subgraph data["Dados"]
+        main[("DynamoDB MainTable<br/>single-table + GSI1")]
+        rl[("DynamoDB RateLimitTable<br/>rate limit + cotas")]
+    end
+
+    subgraph ops["Observabilidade"]
+        dlq[["DLQs"]]
+        alarms["CloudWatch Alarms"]
+        sns["SNS DQLAlarmTopic → e-mail"]
+    end
+
+    app --> apigw --> authz --> compute
+    app -. "Presigned POST" .-> s3
+    app -. "fotos" .-> cdn
+    cdn --> s3
+    cognito --> triggers
+    authFns --> cognito
+    compute --> main
+    compute --> rl
+    mealFns -- "publica checagem" --> checkQ
+    s3 -- "ObjectCreated" --> uploaded --> mealsQ --> process
+    checkQ --> check
+    process --> main
+    check --> main
+    sched --> reconcile --> main
+    mealsQ -. "3 falhas" .-> dlq
+    checkQ -. "3 falhas" .-> dlq
+    dlq --> alarms --> sns
+    reconcile -. "alerta" .-> sns
+```
+
+Pontos que valem guardar:
+
+- **O arquivo nunca passa pela Lambda na subida.** A API devolve um Presigned POST e o app manda o arquivo direto para o S3. A Lambda só lê o arquivo depois, já no processamento.
+- **As fotos saem pela CDN.** O app mostra as fotos pela CloudFront, e a OpenAI também baixa a imagem pela URL da CDN. O bucket não é público (Origin Access Control).
+- **Duas tabelas.** `MainTable` guarda as entidades. `RateLimitTable` guarda contadores atômicos: rate limit por IP, conta ou e-mail, as **cotas de refeição** e a idempotência do webhook. As duas usam TTL (`expiresAt`).
+- **Toda fila tem DLQ e alarme.** Os alarmes só disparam em prod (`IsProd`) e caem no tópico SNS, que manda e-mail.
+
+## Inventário de Lambdas
+
+São 33 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um arquivo em `src/main/functions/` que só liga um **adapter** a uma classe da aplicação (detalhes em [02 · Arquitetura do código](02-arquitetura-codigo.md)).
+
+### Disparadas por HTTP
+
+🔒 = exige JWT do Cognito (`CognitoAuthorizer`).
+
+| Domínio | Método e rota | Lambda |
+|---|---|---|
+| Auth | `POST /auth/sign-up` | `signUp` |
+| Auth | `POST /auth/confirm-sign-up` | `confirmSignUp` |
+| Auth | `POST /auth/resend-confirmation-code` | `resendConfirmationCode` |
+| Auth | `POST /auth/sign-in` | `signIn` |
+| Auth | `POST /auth/refresh-token` | `refreshToken` |
+| Auth | `POST /auth/forgot-password` | `forgotPassword` |
+| Auth | `POST /auth/confirmation-forgot-password` | `confirmationForgotPassword` |
+| Auth | `POST /auth/oauth/callback` | `oauthCallback` |
+| Auth | `POST /auth/complete-onboarding` | `completeOnboarding` |
+| Conta | 🔒 `GET /me` | `me` |
+| Perfil | 🔒 `PUT /profiles` | `updateProfile` |
+| Meta | 🔒 `POST /goals` | `updateGoal` |
+| Refeição | 🔒 `POST /create-meal` | `createMeal` |
+| Refeição | 🔒 `POST /meals/text` | `createTextMeal` |
+| Refeição | 🔒 `GET /meals` | `listMeal` |
+| Refeição | 🔒 `GET /meals/{id}` | `getMealById` |
+| Refeição | 🔒 `DELETE /meals/{id}` | `deleteMeal` |
+| Refeição | 🔒 `POST /meals/{id}/items` | `addMealItems` |
+| Refeição | 🔒 `DELETE /meals/{id}/items/{itemId}` | `removeMealItem` |
+| Refeição | 🔒 `POST /meals/{id}/items/{itemId}/restore` | `restoreMealItem` |
+| Billing | 🔒 `GET /billing/plans` | `plans` |
+| Billing | 🔒 `POST /billing/trial` | `trial` |
+| Billing | 🔒 `POST /billing/checkout` | `checkout` |
+| Billing | 🔒 `POST /billing/cancel` | `cancel` |
+| Billing | `POST /billing/webhooks/asaas` | `webhookAsaas` (token + allowlist de IP, `reservedConcurrency: 5`) |
+| Teste | 🔒 `POST /hello/{id}` | `hello` |
+
+A rota `POST /hello/{id}` é de teste e também sobe em prod.
+
+`complete-onboarding` não usa o authorizer do API Gateway: ele recebe o access token no corpo e valida por conta própria, porque roda antes de a conta estar pronta.
+
+### Disparadas por evento
+
+| Lambda | Gatilho | O que faz | Fluxo |
+|---|---|---|---|
+| `newMealUploadedTrigger` | S3 `ObjectCreated` no `MealsBucket` | Marca a refeição como `QUEUED` e publica na `MealsQueue` | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
+| `processMeal` | SQS `MealsQueue` (lote 2, timeout 120 s) | Valida o arquivo, roda o gate e a IA e grava o resultado | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
+| `checkMealUpload` | SQS `MealUploadCheckQueue` (atraso de 15 min por mensagem, definido no código) | Falha e estorna a refeição que travou antes do processamento | [Foto/áudio](fluxos/refeicao-foto-audio.md#refeição-presa-checagem-de-15-min) |
+| `reconcilePayments` | EventBridge `rate(1 hour)`, só com o Asaas de produção | Confere pagamentos no Asaas e corrige assinaturas que o webhook perdeu | [Reconciliação](fluxos/billing-reconciliacao.md) |
+| `preSignUpTrigger` | Cognito `PreSignUp` | Aplica o beta fechado e cria o usuário "shadow" do login com Google | [Login com Google](fluxos/auth-google-oauth.md) |
+| `preTokenGenerationTrigger` | Cognito `PreTokenGeneration` V2 | Injeta o claim `internalId` no token | [Login com Google](fluxos/auth-google-oauth.md) |
+| `customMessageTrigger` | Cognito `CustomMessage` | Troca o texto dos e-mails de código pelo HTML do NaCal | [Cadastro](fluxos/auth-cadastro-email.md) |
+
+## Stack e convenções
+
+| Item | Valor |
+|---|---|
+| Runtime | Node.js 24, arm64 |
+| Memória e timeout | Padrão: 128 MB (`provider.memorySize`) e 6 s (padrão do Serverless, sem `timeout` no provider). Exceções na tabela abaixo. |
+| Build | esbuild, um pacote por Lambda (`package.individually: true`) |
+| Validação | zod v4 (`zod/mini`) |
+| Package manager | `yarn` |
+| Ambientes | `dev` (conta pessoal) e `prod` (conta `nacal-prod`) |
+| Testes | Não há suíte automatizada. Só `yarn typecheck` e `npx eslint .` |
+
+| Lambda | Memória | Timeout |
+|---|---|---|
+| `processMeal` | 1024 MB | 120 s |
+| `createTextMeal`, `addMealItems` | 256 MB | 29 s |
+| `reconcilePayments` | 128 MB | 60 s, sem retry automático (`maximumRetryAttempts: 0`) |
+| `checkMealUpload` | 128 MB | 15 s |
+| Todas as outras, inclusive `checkout`, `cancel` e `webhookAsaas` | 128 MB | 6 s |
+
+O timeout de 6 s é menor que o abort de 10 s das chamadas ao Asaas (ver [billing](fluxos/billing.md#erros)).
