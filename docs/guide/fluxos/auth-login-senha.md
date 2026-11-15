@@ -17,7 +17,7 @@ Login com e-mail e senha, renovação do token e recuperação de senha. A API �
 | Token | Validade | Uso |
 |---|---|---|
 | Access token | 1 dia | `Authorization: Bearer ...` em toda rota 🔒. Traz o claim `internalId`. |
-| Refresh token | 7 dias, com **rotação** | Gera um novo par. O refresh token antigo deixa de valer na hora (sem período de tolerância). |
+| Refresh token | 7 dias, com **rotação** | Gera um novo par. O refresh token antigo continua valendo por **60 s** (`RetryGracePeriodSeconds`) e depois deixa de valer. |
 
 ## Login e primeiro `GET /me`
 
@@ -66,13 +66,19 @@ sequenceDiagram
 
     U->>API: POST /auth/refresh-token com refreshToken
     API->>Cog: GetTokensFromRefreshToken
-    alt token inválido, expirado ou já usado
+    alt token inválido, expirado, já usado fora dos 60 s ou usuário apagado
         API-->>U: 401 INVALID_REFRESH_TOKEN
+    else throttling do Cognito
+        API-->>U: 429 TOO_MANY_ATTEMPTS
+    else outro erro
+        API-->>U: 500 INTERNAL_SERVER_ERROR
     end
     API-->>U: 200 com o accessToken novo e o refreshToken novo
 ```
 
-Com a rotação ligada, o app **precisa guardar o refresh token novo** de cada resposta. Reusar o antigo dá `INVALID_REFRESH_TOKEN` e o usuário tem que entrar de novo.
+- **Só a recusa do token vira 401.** `NotAuthorizedException`, `RefreshTokenReuseException` e `UserNotFoundException` dão `INVALID_REFRESH_TOKEN`; o throttling passa pelo `mapThrottling` (`429 TOO_MANY_ATTEMPTS`) e o resto (rede, resposta sem tokens) sai como `500`. Assim o app só desloga quando a sessão acabou de verdade.
+- **Rotação com tolerância de 60 s.** O app **precisa guardar o refresh token novo** de cada resposta. Reusar o antigo funciona por 60 s (duas requisições ou duas abas renovando juntas) e depois dá `INVALID_REFRESH_TOKEN`.
+- **No app** (`setupRefreshInterceptor` em `Service.ts` e o `onRefresh` do `AuthContext`): um único refresh por vez (os 401 que chegam juntos esperam a mesma promise, com timeout de 15 s no `POST /auth/refresh-token`) e a requisição é repetida até duas vezes com o access token novo no header (a segunda cobre o token de outra aba que também já venceu). Se outra aba já renovou (o access token guardado é diferente do que tomou 401), o app usa o guardado sem chamar a API. Só desloga quando não há tokens guardados ou quando o refresh responde `401` ou `400` (nesse caso com o toast "Sua sessão expirou. Faça login novamente."); sem rede, timeout, `429` e `5xx` só fazem a requisição falhar e a sessão continua. Na **abertura do app**, se o primeiro `GET /me` (ou o refresh dele) falhar por rede, timeout, `429` ou `5xx`, o app mantém os tokens e mostra a tela "Não foi possível carregar sua conta" com "Tentar de novo" e "Sair da conta" (sem o `/me` não dá para saber se o usuário já fez o onboarding); o `/me` tem timeout de 15 s, e os outros erros deslogam.
 
 ## Esqueci a senha
 
@@ -112,9 +118,9 @@ Esse também é o caminho de recuperação de quem confirmou o cadastro com uma 
 |---|---|
 | Senha errada ou usuário inexistente | `401 INVALID_CREDENTIALS` |
 | E-mail não confirmado | `403 EMAIL_NOT_CONFIRMED` |
-| Refresh token inválido ou já usado | `401 INVALID_REFRESH_TOKEN` |
-| Throttling do Cognito no login (`LimitExceeded`, `TooManyFailedAttempts`, `TooManyRequests`) | `429 TOO_MANY_ATTEMPTS` |
-| Qualquer erro do Cognito no refresh, inclusive throttling ou rede | `401 INVALID_REFRESH_TOKEN` |
+| Refresh token inválido, expirado, já usado fora dos 60 s ou de usuário apagado | `401 INVALID_REFRESH_TOKEN` |
+| Throttling do Cognito no login ou no refresh (`LimitExceeded`, `TooManyFailedAttempts`, `TooManyRequests`) | `429 TOO_MANY_ATTEMPTS` |
+| Outro erro no refresh (rede, resposta sem tokens) | `500 INTERNAL_SERVER_ERROR` |
 | Qualquer erro em `forgot-password` | `204` (o erro não aparece) |
 | Qualquer erro em `confirmation-forgot-password` | `400 BAD_REQUEST` |
 | `GET /me` sem `Account`, com token sem `email_verified` ou `internalId` diferente | `404 RESOURCE_NOT_FOUND` |

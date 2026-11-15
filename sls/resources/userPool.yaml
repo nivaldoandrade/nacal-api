@@ -69,7 +69,7 @@ Resources:
           RefreshToken: days
         RefreshTokenRotation:
           Feature: ENABLED
-          RetryGracePeriodSeconds: 0
+          RetryGracePeriodSeconds: 60
         AllowedOAuthFlowsUserPoolClient: true
         AllowedOAuthScopes:
           - email

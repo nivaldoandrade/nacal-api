@@ -979,7 +979,7 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
   - Username attribute: email
   - Senha: mínimo 8 caracteres
   - Access token: 1 dia
-  - Refresh token: 7 dias (com rotação)
+  - Refresh token: 7 dias (com rotação; o anterior ainda vale por 60 s, `RetryGracePeriodSeconds`)
 - **UserPoolClient**: `nacal-api-{stage}-UserPoolClient`
 - **Google Identity Provider**: Login com Google (Authorization Code + PKCE), scopes `profile email openid`, mapeamento de `name` e `email`, callback para o domínio do frontend
 

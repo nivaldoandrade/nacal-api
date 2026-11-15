@@ -20,7 +20,7 @@ O app decide o que mostrar pelo `code`, nunca pelo `message`, que é em inglês 
 | 400 | `INVALID_GRANT` | Troca do `code` OAuth recusada pelo Cognito, ou token inválido ou incompleto | `oauth/callback`, `complete-onboarding`, `GET /me` |
 | 401 | `UNAUTHORIZED` | Token válido sem o claim `internalId` | Rotas 🔒 |
 | 401 | `INVALID_CREDENTIALS` | Senha errada ou usuário inexistente | `sign-in` |
-| 401 | `INVALID_REFRESH_TOKEN` | Refresh token inválido, expirado ou já usado | `refresh-token` |
+| 401 | `INVALID_REFRESH_TOKEN` | Refresh token inválido, expirado, já usado fora da tolerância de 60 s ou de usuário apagado | `refresh-token` |
 | 403 | `FORBIDDEN` | IP fora da allowlist | `webhooks/asaas` |
 | 403 | `BETA_ACCESS_DENIED` | E-mail fora do beta fechado | `sign-up` |
 | 403 | `EMAIL_NOT_CONFIRMED` | Login antes de confirmar o e-mail | `sign-in` |
@@ -35,14 +35,12 @@ O app decide o que mostrar pelo `code`, nunca pelo `message`, que é em inglês 
 | 422 | `NO_FOOD_IDENTIFIED` | A IA não achou alimento no texto | `meals/text`, `meals/{id}/items` |
 | 429 | `RATE_LIMIT_EXCEEDED` | Rate limit da API (com `Retry-After`) | Rotas com `@RateLimit` |
 | 429 | `DAILY_MEAL_LIMIT_REACHED` | Pro com 20 refeições no dia | `create-meal`, `meals/text` |
-| 429 | `TOO_MANY_ATTEMPTS` | Throttling do Cognito | `sign-in`, `sign-up`, `confirm-sign-up`, `resend` |
+| 429 | `TOO_MANY_ATTEMPTS` | Throttling do Cognito | `sign-in`, `sign-up`, `confirm-sign-up`, `resend`, `refresh-token` |
 | 500 | `INTERNAL_SERVER_ERROR` | Qualquer erro não previsto (vai para o log) | Todas |
 | 502 | `BILLING_ERROR` | O Asaas respondeu com erro, não respondeu em 10 s ou falhou na rede; assinatura sem `subscriptionId` no cancelamento; token de webhook errado | Rotas de billing |
 | 502 | `CODE_DELIVERY_FAILED` | O Cognito não conseguiu enviar o e-mail | `sign-up`, `resend` |
 
-Algumas rotas não seguem o catálogo de propósito:
-- **`forgot-password`** responde sempre `204`, para não revelar quais e-mails têm conta.
-- **`refresh-token`** transforma qualquer erro do Cognito em `401 INVALID_REFRESH_TOKEN`, inclusive throttling ou falha de rede.
+Uma rota não segue o catálogo de propósito: **`forgot-password`** responde sempre `204`, para não revelar quais e-mails têm conta.
 
 **Timeouts de serviços externos.** O abort de 10 s do Asaas e o de 5 s da troca do `code` no OAuth lançam `TimeoutError`; uma falha de rede no `fetch` lança `TypeError: fetch failed`. Os gateways registram os dois no log e os convertem (`isFetchFailure`): no Asaas vira `502 BILLING_ERROR` e no OAuth, `400 INVALID_GRANT`. Outros `TypeError` do `fetch` (URL ou header inválido, erro de configuração) continuam saindo como `500`. As Lambdas que chamam esses serviços têm timeout maior que o abort (ver [visão geral](01-visao-geral.md#stack-e-convenções)), então o erro sai no formato `{ error }`.
 

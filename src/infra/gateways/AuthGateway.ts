@@ -2,8 +2,9 @@ import { createHmac, randomBytes } from 'node:crypto';
 
 import { CodeDeliveryFailed } from '@application/errors/application/CodeDeliveryFailed';
 import { InvalidOAuthGrant } from '@application/errors/application/InvalidOAuthGrant';
+import { InvalidRefreshToken } from '@application/errors/application/InvalidRefreshToken';
 import { TooManyAttempts } from '@application/errors/application/TooManyAttempts';
-import { AdminDeleteUserCommand, AdminSetUserPasswordCommand, AdminGetUserCommand, CodeDeliveryFailureException, ConfirmForgotPasswordCommand, ConfirmSignUpCommand, ForgotPasswordCommand, GetTokensFromRefreshTokenCommand, GetUserCommand, InitiateAuthCommand, LimitExceededException, NotAuthorizedException, ResendConfirmationCodeCommand, SignUpCommand, TooManyFailedAttemptsException, TooManyRequestsException, UserNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
+import { AdminDeleteUserCommand, AdminSetUserPasswordCommand, AdminGetUserCommand, CodeDeliveryFailureException, ConfirmForgotPasswordCommand, ConfirmSignUpCommand, ForgotPasswordCommand, GetTokensFromRefreshTokenCommand, GetUserCommand, InitiateAuthCommand, LimitExceededException, NotAuthorizedException, RefreshTokenReuseException, ResendConfirmationCodeCommand, SignUpCommand, TooManyFailedAttemptsException, TooManyRequestsException, UserNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { cognitoClient } from '@infra/clients/cognitoClient';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
@@ -160,10 +161,21 @@ export class AuthGateway {
       ClientSecret: this.config.envAuth.cognito.clientSecret,
     });
 
-    const { AuthenticationResult } = await cognitoClient.send(getTokensCommand);
+    const { AuthenticationResult } = await mapThrottling(cognitoClient.send(getTokensCommand))
+      .catch((error: unknown) => {
+        if (
+          error instanceof NotAuthorizedException
+          || error instanceof RefreshTokenReuseException
+          || error instanceof UserNotFoundException
+        ) {
+          throw new InvalidRefreshToken();
+        }
+
+        throw error;
+      });
 
     if (!AuthenticationResult?.AccessToken || !AuthenticationResult.RefreshToken) {
-      throw new Error('rror refresh token user.');
+      throw new Error('Error refreshing user tokens: missing tokens in the response.');
     }
 
     return {
