@@ -211,14 +211,14 @@ export class MealRepository {
       ':foods': meal.foods,
       ':removedFoods': meal.removedFoods,
       ':editedAt': meal.editedAt?.toISOString() ?? null,
+      ':expectedVersion': expectedVersion,
       ':nextVersion': expectedVersion + 1,
     };
     const conditions = ['#status = :success'];
 
     if (expectedVersion === 0) {
-      conditions.push('attribute_not_exists(#foodsVersion)');
+      conditions.push('(attribute_not_exists(#foodsVersion) OR #foodsVersion = :expectedVersion)');
     } else {
-      expressionAttributeValues[':expectedVersion'] = expectedVersion;
       conditions.push('#foodsVersion = :expectedVersion');
     }
 
