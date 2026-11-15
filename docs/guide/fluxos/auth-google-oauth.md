@@ -81,7 +81,7 @@ flowchart TD
 
 ### Callback (`POST /auth/oauth/callback`)
 
-1. Troca `code` + `code_verifier` pelos tokens no endpoint `/oauth2/token` do domínio do Cognito, com timeout de 5 s. Resposta de erro do Cognito ou sem tokens vira `400 INVALID_GRANT`. Timeout ou falha de rede vira `500`.
+1. Troca `code` + `code_verifier` pelos tokens no endpoint `/oauth2/token` do domínio do Cognito, com timeout de 5 s. Resposta de erro do Cognito, resposta sem tokens, timeout ou falha de rede viram `400 INVALID_GRANT` (o `code` é de uso único, então tentar de novo exige repetir o login com o Google, que é o que o app pede). A Lambda tem timeout de 15 s.
 2. Lê o usuário com `GetUser` e exige `email`, `externalId`, `internalId` e `email_verified`. Faltou algo: `400 INVALID_GRANT`.
 3. Chama o [`AccountProvisioningService`](auth-cadastro-email.md#accountprovisioningservice-o-ponto-único-de-criação-de-conta): devolve a `Account` existente, aplica um `PendingSignUp` válido ou cria uma `Account` com `isOnboarded: false`.
 4. Responde `200` com `{ accessToken, refreshToken, isOnboarded }`.
@@ -109,7 +109,7 @@ Como o claim `internalId` já vem no primeiro token, o app não precisa renovar 
 | `code` inválido, expirado ou com o `code_verifier` errado | `400 INVALID_GRANT` |
 | Token sem e-mail verificado ou sem `internalId` | `400 INVALID_GRANT` |
 | E-mail já usado por outro `internalId` | `409 EMAIL_ALREADY_IN_USE` |
-| Timeout ou falha de rede na troca do `code` | `500 INTERNAL_SERVER_ERROR` |
+| Timeout ou falha de rede na troca do `code` | `400 INVALID_GRANT` |
 | Onboarding com `accessToken` inválido, expirado ou usuário sem `name` | `400 INVALID_GRANT` |
 | Onboarding sem `Account` | `404 RESOURCE_NOT_FOUND` |
 | Onboarding com `Account` de outro `externalId` | `409 EMAIL_ALREADY_IN_USE` |

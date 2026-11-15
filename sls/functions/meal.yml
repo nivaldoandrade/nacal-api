@@ -75,6 +75,7 @@ processMeal:
     - sqs:
         arn: !GetAtt MealsQueue.Arn
         batchSize: 2
+        functionResponseType: ReportBatchItemFailures
 checkMealUpload:
   handler: src/main/functions/meal/checkMealUpload.handler
   timeout: 15
@@ -82,6 +83,7 @@ checkMealUpload:
     - sqs:
         arn: !GetAtt MealUploadCheckQueue.Arn
         batchSize: 10
+        functionResponseType: ReportBatchItemFailures
 newMealUploadedTrigger:
   handler: src/main/functions/meal/newMealUploadedTrigger.handler
   events:

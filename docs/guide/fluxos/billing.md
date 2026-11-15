@@ -179,7 +179,7 @@ O cancelamento pelo app é síncrono: cancela no Asaas e grava `CANCELED` na mes
 | Cancelar sem assinatura | `400 BAD_REQUEST` |
 | Cancelar o anual (sem `subscriptionId`) | `502 BILLING_ERROR` |
 | O Asaas responde com erro | `502 BILLING_ERROR` |
-| O Asaas não responde | Erro genérico do API Gateway, fora do formato `{ error }` (ver abaixo) |
+| O Asaas não responde em 10 s ou falha a rede | `502 BILLING_ERROR` (ver abaixo) |
 | Webhook de IP fora da allowlist | `403 FORBIDDEN` |
 | Webhook com token errado | `502 BILLING_ERROR` |
 
@@ -199,4 +199,4 @@ O cancelamento pelo app é síncrono: cancela no Asaas e grava `CANCELED` na mes
 | Tela de Planos (app) | `app/src/ui/screens/plans/usePlansScreen.ts` |
 | Idempotência do webhook | [`RateLimitRepository.ts`](../../../src/infra/databases/dynamodb/RateLimitRepository.ts) |
 
-**Timeout do Asaas.** As chamadas ao Asaas abortam em 10 s (`AbortSignal.timeout`), mas as Lambdas `checkout` e `cancel` usam o timeout padrão de 6 s. Na prática, a Lambda morre antes do abort e o API Gateway devolve um erro genérico. Mesmo dentro do prazo, o abort lança `TimeoutError`, que não vira `BillingError` e sairia como `500 INTERNAL_SERVER_ERROR`.
+**Timeout do Asaas.** Cada chamada ao Asaas aborta em 10 s (`AbortSignal.timeout`). O `AsaasPaymentGateway.request` converte o `TimeoutError` e a falha de rede do `fetch` em `BillingError` (`502`), e o app mostra a mensagem de serviço de pagamento indisponível. O gateway registra a falha no log antes de converter. As Lambdas que chamam o Asaas têm timeout acima do abort: `checkout` 29 s (pode cancelar a assinatura antiga e criar o checkout na mesma requisição, no máximo duas chamadas seguidas) e `cancel` 15 s. O `webhookAsaas` não chama o Asaas (só confere o token e lê o corpo); os 15 s dele são folga para o DynamoDB e o SNS.

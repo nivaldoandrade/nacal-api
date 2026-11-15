@@ -115,7 +115,7 @@ Pontos que valem guardar:
 
 ## Inventário de Lambdas
 
-São 33 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um arquivo em `src/main/functions/` que só liga um **adapter** a uma classe da aplicação (detalhes em [02 · Arquitetura do código](02-arquitetura-codigo.md)).
+São 32 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um arquivo em `src/main/functions/` que só liga um **adapter** a uma classe da aplicação (detalhes em [02 · Arquitetura do código](02-arquitetura-codigo.md)).
 
 ### Disparadas por HTTP
 
@@ -148,9 +148,6 @@ São 33 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um
 | Billing | 🔒 `POST /billing/checkout` | `checkout` |
 | Billing | 🔒 `POST /billing/cancel` | `cancel` |
 | Billing | `POST /billing/webhooks/asaas` | `webhookAsaas` (token + allowlist de IP, `reservedConcurrency: 5`) |
-| Teste | 🔒 `POST /hello/{id}` | `hello` |
-
-A rota `POST /hello/{id}` é de teste e também sobe em prod.
 
 `complete-onboarding` não usa o authorizer do API Gateway: ele recebe o access token no corpo e valida por conta própria, porque roda antes de a conta estar pronta.
 
@@ -159,8 +156,8 @@ A rota `POST /hello/{id}` é de teste e também sobe em prod.
 | Lambda | Gatilho | O que faz | Fluxo |
 |---|---|---|---|
 | `newMealUploadedTrigger` | S3 `ObjectCreated` no `MealsBucket` | Marca a refeição como `QUEUED` e publica na `MealsQueue` | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
-| `processMeal` | SQS `MealsQueue` (lote 2, timeout 120 s) | Valida o arquivo, roda o gate e a IA e grava o resultado | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
-| `checkMealUpload` | SQS `MealUploadCheckQueue` (atraso de 15 min por mensagem, definido no código) | Falha e estorna a refeição que travou antes do processamento | [Foto/áudio](fluxos/refeicao-foto-audio.md#refeição-presa-checagem-de-15-min) |
+| `processMeal` | SQS `MealsQueue` (lote 2 com retorno parcial, timeout 120 s) | Valida o arquivo, roda o gate e a IA e grava o resultado | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
+| `checkMealUpload` | SQS `MealUploadCheckQueue` (lote 10 com retorno parcial, atraso de 15 min por mensagem, definido no código) | Falha e estorna a refeição que travou antes do processamento | [Foto/áudio](fluxos/refeicao-foto-audio.md#refeição-presa-checagem-de-15-min) |
 | `reconcilePayments` | EventBridge `rate(1 hour)`, só com o Asaas de produção | Confere pagamentos no Asaas e corrige assinaturas que o webhook perdeu | [Reconciliação](fluxos/billing-reconciliacao.md) |
 | `preSignUpTrigger` | Cognito `PreSignUp` | Aplica o beta fechado e cria o usuário "shadow" do login com Google | [Login com Google](fluxos/auth-google-oauth.md) |
 | `preTokenGenerationTrigger` | Cognito `PreTokenGeneration` V2 | Injeta o claim `internalId` no token | [Login com Google](fluxos/auth-google-oauth.md) |
@@ -183,7 +180,8 @@ A rota `POST /hello/{id}` é de teste e também sobe em prod.
 | `processMeal` | 1024 MB | 120 s |
 | `createTextMeal`, `addMealItems` | 256 MB | 29 s |
 | `reconcilePayments` | 128 MB | 60 s, sem retry automático (`maximumRetryAttempts: 0`) |
-| `checkMealUpload` | 128 MB | 15 s |
-| Todas as outras, inclusive `checkout`, `cancel` e `webhookAsaas` | 128 MB | 6 s |
+| `checkout` | 128 MB | 29 s |
+| `cancel`, `webhookAsaas`, `oauthCallback`, `checkMealUpload` | 128 MB | 15 s |
+| Todas as outras | 128 MB | 6 s |
 
-O timeout de 6 s é menor que o abort de 10 s das chamadas ao Asaas (ver [billing](fluxos/billing.md#erros)).
+Os timeouts de `checkout` e `cancel` ficam acima do abort de 10 s de cada chamada ao Asaas: o `checkout` pode fazer duas chamadas seguidas (cancelar a assinatura antiga e criar o checkout) e fica logo abaixo do corte de 30 s do HTTP API. O `oauthCallback` cobre o abort de 5 s da troca do `code` mais o `GetUser` e a conta no DynamoDB (ver [billing](fluxos/billing.md#erros) e [login com Google](fluxos/auth-google-oauth.md#erros)).

@@ -245,9 +245,7 @@ gantt
 
 **Estorno atômico.** `failAndRefund` e `rejectAndRefund` usam uma `TransactWriteItems` que, juntos, mudam o status da refeição (condicionado ao status lido) e decrementam os contadores de cota (mês e, no Pro, dia), no bucket gravado na refeição, mesmo que o estorno aconteça no dia seguinte. O `ClientRequestToken` (`<mealId>#fail#<attempts>`, `<mealId>#reject#<attempts>` ou `<mealId>#upload` para a refeição presa em `UPLOADING`) torna a transação idempotente sem colidir com outra operação da mesma refeição. O DynamoDB aceita até 36 caracteres nesse token. A flag `quotaRefunded` registra se o estorno aconteceu: se o contador já estiver zerado, a refeição muda de status sem estorno.
 
-**Lote de 2.** A `processMeal` recebe até 2 mensagens por vez, e o `lambdaSQSAdapter` processa as duas com `Promise.all`, sem retorno parcial de lote. Se uma lançar erro, a invocação termina na hora e as **duas** voltam para a fila:
-- se a outra já tinha terminado, ela é ignorada no reprocessamento (status terminal);
-- se ainda estava rodando, pode ser congelada no meio. Fica em `PROCESSING` até o lease vencer, **gasta uma tentativa** sem ter falhado e pode chamar a OpenAI de novo.
+**Lote de 2 com retorno parcial.** A `processMeal` recebe até 2 mensagens por vez. O `lambdaSQSAdapter` processa as duas com `Promise.allSettled` e espera as duas terminarem; as que lançaram erro vão no `batchItemFailures` (o evento usa `functionResponseType: ReportBatchItemFailures`) e só elas voltam para a fila, depois do `VisibilityTimeout`. A outra é apagada normalmente. O erro de cada mensagem vai para o log. O `checkMealUpload` usa o mesmo adapter, com lotes de até 10.
 
 **Limitações conhecidas:**
 - **Lease sem fencing completo.** Só o `markForRetry` confere o `leaseExpiresAt`. `markSuccess` e `rejectAndRefund` só exigem `status = PROCESSING`. Hoje o risco é teórico, porque o timeout (120 s) é menor que o lease (130 s). Volta a importar se esses números mudarem.

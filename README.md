@@ -214,7 +214,6 @@ endpoints:
   DELETE - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}/items/{itemId}
   POST - https://xxx.execute-api.sa-east-1.amazonaws.com/meals/{id}/items/{itemId}/restore
 functions:
-  hello: nacal-api-dev-hello
   signUp: nacal-api-dev-signUp
   signIn: nacal-api-dev-signIn
   confirmSignUp: nacal-api-dev-confirmSignUp
@@ -443,7 +442,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
   ```
 
 - `isOnboarded: false` indica um usuário novo — o backend cria a `Account` no DynamoDB com `isOnboarded: false`, então o frontend deve chamar `/auth/complete-onboarding` com o `accessToken` retornado. Para um usuário já registrado, `isOnboarded: true` e a conta existente é reutilizada. O `accessToken` já contém o claim `internalId` (usado como `accountId` nas rotas autenticadas).
-- Erros: `400 INVALID_GRANT` (code inválido ou expirado, resposta do Cognito sem tokens ou token sem dados de identidade) e `400 VALIDATION` (body inválido). Timeout de 5s na troca de código com o Cognito.
+- Erros: `400 INVALID_GRANT` (code inválido ou expirado, resposta do Cognito sem tokens ou token sem dados de identidade) e `400 VALIDATION` (body inválido). Timeout de 5s na troca de código com o Cognito; timeout ou falha de rede nessa troca também viram `400 INVALID_GRANT` (Lambda com timeout de 15s).
 
 #### Complete Onboarding -> `/auth/complete-onboarding`
 
@@ -891,6 +890,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 - Um checkout do mesmo plano e `returnUrl` criado há pouco (faltando mais de 10 min para expirar) é devolvido de novo, em vez de criar outro.
 - Mensal em `PAST_DUE` ainda com Pro (carência de 3 dias) → devolve a fatura vencida da assinatura atual: `{ "checkoutUrl": "https://sandbox.asaas.com/i/...", "expiresAt": null, "type": "INVOICE" }`. Com o Pro já vencido, a assinatura antiga é cancelada no Asaas e sai um checkout novo.
 - Mensal ativa, troca de ciclo com o Pro pago ou anual a mais de 31 dias do vencimento → `409 SUBSCRIPTION_ALREADY_ACTIVE`. Rate limit: 10 por hora por conta (o `/billing/cancel` também).
+- Cada chamada ao Asaas aborta em 10s; timeout ou falha de rede viram `502 BILLING_ERROR`. Lambda com timeout de 29s (`/billing/cancel`: 15s).
 
 #### Cancel -> `/billing/cancel`
 
@@ -1000,6 +1000,7 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 
 - **MealsQueue**: Fila para processamento assíncrono de refeições, com alarme por email (SNS) quando a mensagem mais antiga passa de 2 min (`MealsQueueAgeAlarm`)
 - **MealsDLQ**: Dead Letter Queue com alarme por email (SNS)
+- Os consumidores (`processMeal`, lote de 2, e `checkMealUpload`, lote de 10) usam `ReportBatchItemFailures`: só a mensagem que falhou volta para a fila
 - **MealUploadCheckQueue**: Fila da checagem de refeição presa (atraso de 15 min por mensagem)
 - **MealUploadCheckDLQ**: Dead Letter Queue da checagem, com alarme por email (SNS)
 

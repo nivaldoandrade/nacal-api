@@ -131,7 +131,7 @@ Cada tipo de gatilho tem um adapter, e cada adapter espera um contrato:
 | Adapter | Gatilho | Contrato da classe | Comportamento em erro |
 |---|---|---|---|
 | `lambdaHttpAdapter` | API Gateway HTTP | `Controller<'public' \| 'private'>` | Converte em resposta HTTP. Nunca lança. |
-| `lambdaSQSAdapter` | SQS | `ISQSHandler` | Lança: o **lote inteiro** volta para a fila. |
+| `lambdaSQSAdapter` | SQS | `ISQSHandler` | Processa o lote com `Promise.allSettled`, registra cada erro no log e devolve `batchItemFailures`: só as mensagens que falharam voltam para a fila. O evento precisa de `functionResponseType: ReportBatchItemFailures`. |
 | `lambdaS3Adapter` | S3 | `IEventHandler` | Só registra no log (`Promise.allSettled`). Não há retry. |
 | `lambdaScheduleAdapter` | EventBridge | `IScheduleHandler` | Lança. |
 
@@ -217,7 +217,7 @@ export class CreateMealController extends Controller<'private'> {
 2. **Use case**: `src/application/useCases/<domínio>/<Nome>UseCase.ts`, com `@Injectable()` e as dependências no construtor.
 3. **Controller**: `src/application/controllers/<domínio>/<Nome>Controller.ts`, com `@Injectable()`, `@Schema(...)` e, se for o caso, `@RateLimit(...)`.
 4. **Handler**: `src/main/functions/<domínio>/<nome>.ts` com `lambdaHttpAdapter(<Nome>Controller)`.
-5. **Rota**: entrada em `sls/functions/<domínio>.yml` (os de `auth` e `hello` usam `.yaml`), com `authorizer: name: CognitoAuthorizer` se for privada. Um domínio novo também precisa entrar em `functions:` no `serverless.yml`.
+5. **Rota**: entrada em `sls/functions/<domínio>.yml` (o de `auth` usa `.yaml`), com `authorizer: name: CognitoAuthorizer` se for privada. Um domínio novo também precisa entrar em `functions:` no `serverless.yml`.
 6. **Permissões**: se a Lambda acessa um recurso novo da AWS, ajuste `sls/config/role.yml`.
 7. **Docs**: atualize o README da API e, se o fluxo mudou, o diagrama correspondente neste guia.
 8. **Checagem**: `yarn typecheck` e `npx eslint .`.

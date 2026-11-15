@@ -7,6 +7,7 @@ import { AdminDeleteUserCommand, AdminSetUserPasswordCommand, AdminGetUserComman
 import { cognitoClient } from '@infra/clients/cognitoClient';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { isFetchFailure } from '@shared/utils/isFetchFailure';
 import { normalizeEmail } from '@shared/utils/normalizeEmail';
 
 @Injectable()
@@ -33,21 +34,21 @@ export class AuthGateway {
       code_verifier,
     });
 
-    const response = await fetch(`${this.config.envAuth.cognito.userPooldomain}/oauth2/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: `Basic ${authorizationToken}`,
-      },
-      body: body.toString(),
-      signal: AbortSignal.timeout(5000),
-    });
+    let tokens: AuthGateway.ExchangeCodeForTokens['fetchResponse'];
 
-    if (!response.ok) {
-      throw new InvalidOAuthGrant('Error while exchanging code.');
+    try {
+      tokens = await this.requestTokens(authorizationToken, body);
+    } catch (error) {
+      if (isFetchFailure(error)) {
+        // eslint-disable-next-line no-console
+        console.error('OAuth code exchange failed:', error);
+        throw new InvalidOAuthGrant('Code exchange timed out or failed.');
+      }
+
+      throw error;
     }
 
-    const { access_token, refresh_token } = await response.json() as AuthGateway.ExchangeCodeForTokens['fetchResponse'];
+    const { access_token, refresh_token } = tokens;
 
     if (!access_token || !refresh_token) {
       throw new InvalidOAuthGrant('Cognito token response is missing tokens.');
@@ -294,6 +295,27 @@ export class AuthGateway {
     return createHmac('SHA256', clientSecret)
       .update(`${email}${clientId}`)
       .digest('base64');
+  }
+
+  private async requestTokens(
+    authorizationToken: string,
+    body: URLSearchParams,
+  ): Promise<AuthGateway.ExchangeCodeForTokens['fetchResponse']> {
+    const response = await fetch(`${this.config.envAuth.cognito.userPooldomain}/oauth2/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Basic ${authorizationToken}`,
+      },
+      body: body.toString(),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      throw new InvalidOAuthGrant('Error while exchanging code.');
+    }
+
+    return response.json() as Promise<AuthGateway.ExchangeCodeForTokens['fetchResponse']>;
   }
 }
 

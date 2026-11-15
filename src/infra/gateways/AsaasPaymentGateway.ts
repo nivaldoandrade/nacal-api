@@ -3,6 +3,7 @@ import { Subscription } from '@application/entities/Subscription';
 import { BillingError } from '@application/errors/application/BillingError';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { isFetchFailure } from '@shared/utils/isFetchFailure';
 import { DEFAULT_TIME_ZONE } from '@shared/utils/timeZone';
 
 @Injectable()
@@ -188,7 +189,21 @@ export class AsaasPaymentGateway extends IPaymentGateway {
     }
   }
 
-  private async request<T>(path: string, init?: Omit<RequestInit, 'body'> & { body?: unknown }): Promise<T> {
+  private async request<T>(path: string, init?: AsaasPaymentGateway.RequestInit): Promise<T> {
+    try {
+      return await this.send<T>(path, init);
+    } catch (error) {
+      if (isFetchFailure(error)) {
+        // eslint-disable-next-line no-console
+        console.error(`Asaas request failed: ${init?.method ?? 'GET'} ${path}`, error);
+        throw new BillingError('Asaas request timed out or failed.');
+      }
+
+      throw error;
+    }
+  }
+
+  private async send<T>(path: string, init?: AsaasPaymentGateway.RequestInit): Promise<T> {
     const response = await fetch(`${this.config.billing.asaas.baseUrl}${path}`, {
       ...init,
       headers: {
@@ -217,6 +232,8 @@ export class AsaasPaymentGateway extends IPaymentGateway {
 }
 
 export namespace AsaasPaymentGateway {
+  export type RequestInit = Omit<globalThis.RequestInit, 'body'> & { body?: unknown };
+
   export type RequestCustomersResponse = {
     id: string;
   };

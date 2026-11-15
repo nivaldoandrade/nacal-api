@@ -49,6 +49,7 @@ confirmationForgotPassword:
 
 oauthCallback:
   handler: src/main/functions/auth/oauthCallback.handler
+  timeout: 15
   events:
     - httpApi:
         path: /auth/oauth/callback

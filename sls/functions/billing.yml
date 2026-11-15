@@ -16,6 +16,7 @@ trial:
           name: CognitoAuthorizer
 checkout:
   handler: src/main/functions/billing/checkout.handler
+  timeout: 29
   events:
     - httpApi:
         path: /billing/checkout
@@ -24,6 +25,7 @@ checkout:
           name: CognitoAuthorizer
 cancel:
   handler: src/main/functions/billing/cancel.handler
+  timeout: 15
   events:
     - httpApi:
         path: /billing/cancel
@@ -32,6 +34,7 @@ cancel:
           name: CognitoAuthorizer
 webhookAsaas:
   handler: src/main/functions/billing/webhookAsaas.handler
+  timeout: 15
   reservedConcurrency: 5
   events:
     - httpApi:

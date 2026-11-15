@@ -1,8 +1,0 @@
-hello:
-  handler: src/main/functions/hello.handler
-  events:
-    - httpApi:
-        path: /hello/{id}
-        method: POST
-        authorizer:
-          name: CognitoAuthorizer

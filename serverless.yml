@@ -49,14 +49,13 @@ resources:
   - ${file(./sls/resources/mainTable.yml)}
   - ${file(./sls/resources/mealsBucket.yml)}
   - ${file(./sls/resources/mealsBucketCDN.yml)}
-  - ${file(./sls/resources/MealsQueue.yml)}
+  - ${file(./sls/resources/mealsQueue.yml)}
   - ${file(./sls/resources/mealUploadCheckQueue.yml)}
   - ${file(./sls/resources/DLQAlarmTopic.yml)}
   - ${file(./sls/resources/reconcilePaymentsAlarm.yml)}
   - ${file(./sls/resources/rateLimitTable.yml)}
 
 functions:
-  - ${file(./sls/functions/hello.yaml)}
   - ${file(./sls/functions/auth.yaml)}
   - ${file(./sls/functions/account.yml)}
   - ${file(./sls/functions/meal.yml)}
