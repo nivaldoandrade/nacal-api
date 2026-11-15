@@ -315,7 +315,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 | ------ | ------------------------- | ------------------------------------------------------------------------- | ---------------------------------- |
 | GET    | `/billing/plans`          | Catálogo de planos (id, preço, ciclo, trialDays, features)                | JWT                                |
 | POST   | `/billing/trial`          | Trial de 7 dias (1 por conta) → `{ trialEndsAt }`                         | JWT                                |
-| POST   | `/billing/checkout`       | Cria checkout Asaas → `{ checkoutUrl, expiresAt }`                        | JWT                                |
+| POST   | `/billing/checkout`       | Cria checkout Asaas ou devolve a fatura vencida → `{ checkoutUrl, expiresAt, type }` | JWT                                |
 | POST   | `/billing/cancel`         | Cancela trial (local) ou assinatura (gateway) → `{ status }`              | JWT                                |
 | POST   | `/billing/webhooks/asaas` | Webhook Asaas — fonte da verdade da ativação                              | Pública (header `asaas-access-token`) |
 
@@ -884,10 +884,13 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 - Resposta esperada:
   ```json
-  { "checkoutUrl": "https://sandbox.asaas.com/checkout/...", "expiresAt": "2026-10-06T13:00:00.000Z" }
+  { "checkoutUrl": "https://sandbox.asaas.com/checkout/...", "expiresAt": "2026-10-06T13:00:00.000Z", "type": "CHECKOUT" }
   ```
 
 - `planId` fora do catálogo → `400`; `returnUrl` precisa passar pelo allowlist de `APP_WEB_URL` (origin exato ou prefixo `origin/`).
+- Um checkout do mesmo plano e `returnUrl` criado há pouco (faltando mais de 10 min para expirar) é devolvido de novo, em vez de criar outro.
+- Mensal em `PAST_DUE` ainda com Pro (carência de 3 dias) → devolve a fatura vencida da assinatura atual: `{ "checkoutUrl": "https://sandbox.asaas.com/i/...", "expiresAt": null, "type": "INVOICE" }`. Com o Pro já vencido, a assinatura antiga é cancelada no Asaas e sai um checkout novo.
+- Mensal ativa, troca de ciclo com o Pro pago ou anual a mais de 31 dias do vencimento → `409 SUBSCRIPTION_ALREADY_ACTIVE`. Rate limit: 10 por hora por conta (o `/billing/cancel` também).
 
 #### Cancel -> `/billing/cancel`
 

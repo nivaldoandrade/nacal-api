@@ -3,6 +3,7 @@ import { Subscription } from '@application/entities/Subscription';
 import { BillingError } from '@application/errors/application/BillingError';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { DEFAULT_TIME_ZONE } from '@shared/utils/timeZone';
 
 @Injectable()
 export class AsaasPaymentGateway extends IPaymentGateway {
@@ -73,6 +74,32 @@ export class AsaasPaymentGateway extends IPaymentGateway {
 
   async cancelSubscription({ subscriptionRef }: AsaasPaymentGateway.CancelSubscriptionParams): Promise<void> {
     await this.request(`/v3/subscriptions/${subscriptionRef}`, { method: 'DELETE' });
+  }
+
+  async findOpenSubscriptionPayment({ subscriptionRef }: AsaasPaymentGateway.FindOpenSubscriptionPaymentParams): Promise<IPaymentGateway.OpenPayment | null> {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: DEFAULT_TIME_ZONE }).format(new Date());
+
+    for (const status of ['OVERDUE', 'PENDING']) {
+      const query = new URLSearchParams({ status, limit: '100' });
+
+      const response = await this.request<AsaasPaymentGateway.ListPaymentsResponse>(
+        `/v3/subscriptions/${subscriptionRef}/payments?${query}`,
+      );
+
+      const [latest] = response.data
+        .filter((payment) => !payment.deleted && payment.invoiceUrl && payment.dueDate <= today)
+        .sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+
+      if (latest?.invoiceUrl) {
+        return {
+          paymentId: latest.id,
+          invoiceUrl: latest.invoiceUrl,
+          dueDate: latest.dueDate,
+        };
+      }
+    }
+
+    return null;
   }
 
   async listPaidPayments({ dueDateFrom }: IPaymentGateway.ListPaidPaymentsInput): Promise<IPaymentGateway.PaidPayment[]> {
@@ -204,6 +231,10 @@ export namespace AsaasPaymentGateway {
     subscriptionRef: string;
   }
 
+  export type FindOpenSubscriptionPaymentParams = {
+    subscriptionRef: string;
+  }
+
   export type ListPaymentsResponse = {
     hasMore: boolean;
     data: Array<{
@@ -211,6 +242,7 @@ export namespace AsaasPaymentGateway {
       dueDate: string;
       value: number;
       deleted?: boolean;
+      invoiceUrl?: string | null;
       subscription?: string | null;
       checkoutSession?: string | null;
       externalReference?: string | null;

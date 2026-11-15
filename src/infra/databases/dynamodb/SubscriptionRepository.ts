@@ -1,5 +1,6 @@
 import { Subscription } from '@application/entities/Subscription';
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
+import { DeleteCommand, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { dynamodbClient } from '@infra/clients/dynamodbClient';
 import { SubscriptionItem } from '@infra/databases/dynamodb/items/SubscriptionItem';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -7,7 +8,11 @@ import { AppConfig } from '@shared/config/AppConfig';
 
 const GATEWAY_REF_TYPE = 'GATEWAY_REF';
 
+const PENDING_CHECKOUT_TYPE = 'PENDING_CHECKOUT';
+
 const getGatewayRefPK = (gatewayId: string): string => `GATEWAY#${gatewayId}`;
+
+const getPendingCheckoutPK = (accountId: string): string => `PENDING_CHECKOUT#${accountId}`;
 
 @Injectable()
 export class SubscriptionRepository {
@@ -98,6 +103,87 @@ export class SubscriptionRepository {
       planId: gatewayRefItem.planId,
     };
   }
+
+  async savePendingCheckout({
+    accountId,
+    planId,
+    returnUrl,
+    checkoutId,
+    checkoutUrl,
+    checkoutExpiresAt,
+  }: SubscriptionRepository.PendingCheckout): Promise<void> {
+    const command = new PutCommand({
+      TableName: this.config.db.dynamodb.mainTable,
+      Item: {
+        PK: getPendingCheckoutPK(accountId),
+        SK: getPendingCheckoutPK(accountId),
+        type: PENDING_CHECKOUT_TYPE,
+        accountId,
+        planId,
+        returnUrl,
+        checkoutId,
+        checkoutUrl,
+        checkoutExpiresAt: checkoutExpiresAt.toISOString(),
+        createdAt: new Date().toISOString(),
+        expiresAt: Math.floor(checkoutExpiresAt.getTime() / 1000),
+      },
+    });
+
+    await dynamodbClient.send(command);
+  }
+
+  async findPendingCheckout(accountId: string): Promise<SubscriptionRepository.PendingCheckout | null> {
+    const command = new GetCommand({
+      TableName: this.config.db.dynamodb.mainTable,
+      Key: {
+        PK: getPendingCheckoutPK(accountId),
+        SK: getPendingCheckoutPK(accountId),
+      },
+      ConsistentRead: true,
+    });
+
+    const { Item } = await dynamodbClient.send(command);
+
+    if (!Item) {
+      return null;
+    }
+
+    const pendingCheckoutItem = Item as SubscriptionRepository.PendingCheckoutItem;
+
+    return {
+      accountId: pendingCheckoutItem.accountId,
+      planId: pendingCheckoutItem.planId,
+      returnUrl: pendingCheckoutItem.returnUrl,
+      checkoutId: pendingCheckoutItem.checkoutId,
+      checkoutUrl: pendingCheckoutItem.checkoutUrl,
+      checkoutExpiresAt: new Date(pendingCheckoutItem.checkoutExpiresAt),
+    };
+  }
+
+  async deletePendingCheckout({ accountId, checkoutId }: SubscriptionRepository.DeletePendingCheckoutParams): Promise<void> {
+    const command = new DeleteCommand({
+      TableName: this.config.db.dynamodb.mainTable,
+      Key: {
+        PK: getPendingCheckoutPK(accountId),
+        SK: getPendingCheckoutPK(accountId),
+      },
+      ConditionExpression: '#checkoutId = :checkoutId',
+      ExpressionAttributeNames: {
+        '#checkoutId': 'checkoutId',
+      },
+      ExpressionAttributeValues: {
+        ':checkoutId': checkoutId,
+      },
+    });
+
+    try {
+      await dynamodbClient.send(command);
+    } catch (error) {
+      if (!(error instanceof ConditionalCheckFailedException)) {
+        throw error;
+      }
+    }
+  }
 }
 
 export namespace SubscriptionRepository {
@@ -110,5 +196,23 @@ export namespace SubscriptionRepository {
   export type GatewayRef = {
     accountId: string;
     planId: Subscription.PlanIdType;
+  };
+
+  export type PendingCheckout = {
+    accountId: string;
+    planId: Subscription.PlanIdType;
+    returnUrl: string;
+    checkoutId: string;
+    checkoutUrl: string;
+    checkoutExpiresAt: Date;
+  };
+
+  export type PendingCheckoutItem = Omit<PendingCheckout, 'checkoutExpiresAt'> & {
+    checkoutExpiresAt: string;
+  };
+
+  export type DeletePendingCheckoutParams = {
+    accountId: string;
+    checkoutId: string;
   };
 }

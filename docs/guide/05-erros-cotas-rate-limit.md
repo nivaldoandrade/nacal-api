@@ -31,6 +31,7 @@ O app decide o que mostrar pelo `code`, nunca pelo `message`, que é em inglês 
 | 409 | `MEAL_ITEM_LIMIT_REACHED` | 5 adições ou 30 itens | `meals/{id}/items`, `restore` |
 | 409 | `MEAL_LAST_ITEM` | Tentou remover o único item | `DELETE .../items/{itemId}` |
 | 409 | `TRIAL_NOT_AVAILABLE` | A conta já teve assinatura | `billing/trial` |
+| 409 | `SUBSCRIPTION_ALREADY_ACTIVE` | Já existe assinatura que impede um checkout novo (mensal ativa, troca de ciclo com o Pro pago, anual fora dos últimos 31 dias, `PAST_DUE` sem cobrança em aberto) | `billing/checkout` |
 | 422 | `NO_FOOD_IDENTIFIED` | A IA não achou alimento no texto | `meals/text`, `meals/{id}/items` |
 | 429 | `RATE_LIMIT_EXCEEDED` | Rate limit da API (com `Retry-After`) | Rotas com `@RateLimit` |
 | 429 | `DAILY_MEAL_LIMIT_REACHED` | Pro com 20 refeições no dia | `create-meal`, `meals/text` |
@@ -97,6 +98,8 @@ Feito em código, sem WAF: o decorator `@RateLimit` declara a regra no controlle
 | `POST /meals/{id}/items/{itemId}/restore` | — | — | 60 / 1 h |
 | `DELETE /meals/{id}` | — | — | 30 / 1 h |
 | `POST /billing/trial` | — | — | 5 / 1 h |
+| `POST /billing/checkout` | — | — | 10 / 1 h |
+| `POST /billing/cancel` | — | — | 10 / 1 h |
 | `POST /billing/webhooks/asaas` | 120 / 1 min | — | — |
 
 As rotas sem linha nesta tabela não têm rate limit em código.

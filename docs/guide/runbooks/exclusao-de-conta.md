@@ -89,18 +89,19 @@ aws cloudfront create-invalidation \
 
 ## 4. Listar e apagar os itens da `MainTable`
 
-Itens da conta: perfil, metas, assinatura, refeições (`ACCOUNT#<id>`), cadastro pendente (`PENDING_SIGNUP#<id>`) e vínculos de checkout (`GATEWAY#<checkoutId>`, que guardam o `accountId` num atributo).
+Itens da conta: perfil, metas, assinatura, refeições (`ACCOUNT#<id>`), cadastro pendente (`PENDING_SIGNUP#<id>`), checkout aberto (`PENDING_CHECKOUT#<id>`, que o TTL apaga em até 60 min) e vínculos de checkout (`GATEWAY#<checkoutId>`, que guardam o `accountId` num atributo).
 
 ```bash
 cat > /tmp/nacal-delete-main.json <<EOF
 {
   ":account": {"S": "ACCOUNT#${ACCOUNT_ID}"},
   ":pending": {"S": "PENDING_SIGNUP#${ACCOUNT_ID}"},
+  ":checkout": {"S": "PENDING_CHECKOUT#${ACCOUNT_ID}"},
   ":gateway": {"S": "GATEWAY#"},
   ":accountId": {"S": "${ACCOUNT_ID}"}
 }
 EOF
-export MAIN_FILTER='begins_with(PK, :account) OR begins_with(PK, :pending) OR (begins_with(PK, :gateway) AND accountId = :accountId)'
+export MAIN_FILTER='begins_with(PK, :account) OR begins_with(PK, :pending) OR begins_with(PK, :checkout) OR (begins_with(PK, :gateway) AND accountId = :accountId)'
 ```
 
 Liste primeiro, sem apagar:

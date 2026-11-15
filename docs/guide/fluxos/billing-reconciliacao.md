@@ -55,7 +55,7 @@ sequenceDiagram
 ## Como ela evita trabalho e alarmes repetidos
 
 - **Marcador por pagamento**: cada pagamento vira o evento `reconcile-payment#<paymentId>`, gravado na `RateLimitTable` com TTL de 35 + 10 dias. Na hora seguinte ele é pulado sem consultar a assinatura.
-- **`skipCoveredPayment`**: se o `paidUntil` da assinatura já cobre o ciclo daquele pagamento, o webhook fez o trabalho e nada é gravado (`applied: false`). Só os casos em que a reconciliação **mudou** algo entram em `activated`.
+- **Pagamento coberto**: se o `paidUntil` da assinatura já cobre o ciclo daquele pagamento, o webhook fez o trabalho e nada é gravado (`applied: false`). O webhook segue a mesma regra; a diferença é que, com `skipCoveredPayment`, a reconciliação também não dispara o alerta de assinatura por cima do anual. Só os casos em que a reconciliação **mudou** algo entram em `activated`.
 - **Ordem por vencimento**: os pagamentos antigos são aplicados antes, para o primeiro pagamento de uma assinatura criar o vínculo `GATEWAY#` antes da renovação e o `paidUntil` avançar na ordem certa.
 - **Fora do escopo**: `PAYMENT_OVERDUE` e cancelamentos perdidos. A reconciliação só olha pagamentos confirmados.
 

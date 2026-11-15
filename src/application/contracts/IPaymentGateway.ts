@@ -4,6 +4,7 @@ export abstract class IPaymentGateway {
   abstract createCustomer(input: IPaymentGateway.CreateCustomerInput): Promise<{ customerId: string }>;
   abstract createCheckout(input: IPaymentGateway.CreateCheckoutInput): Promise<{ checkoutUrl: string; expiresAt: string; checkoutId: string }>;
   abstract cancelSubscription(input: { subscriptionRef: string }): Promise<void>;
+  abstract findOpenSubscriptionPayment(input: { subscriptionRef: string }): Promise<IPaymentGateway.OpenPayment | null>;
   abstract listPaidPayments(input: IPaymentGateway.ListPaidPaymentsInput): Promise<IPaymentGateway.PaidPayment[]>;
   abstract parseWebhook(headers: Record<string, string | undefined>, rawBody: string): Promise<IPaymentGateway.BillingEvent | null>;
 }
@@ -13,6 +14,8 @@ export namespace IPaymentGateway {
   export type CreateCheckoutInput = { accountId: string; plan: Subscription.PlanIdType; returnUrl: string };
 
   export type ListPaidPaymentsInput = { dueDateFrom: string };
+
+  export type OpenPayment = { paymentId: string; invoiceUrl: string; dueDate: string };
 
   export type PaidPayment = {
     paymentId: string;

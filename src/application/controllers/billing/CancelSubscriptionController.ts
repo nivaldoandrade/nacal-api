@@ -2,8 +2,10 @@ import { Controller } from '@application/contracts/Controller';
 import { Subscription } from '@application/entities/Subscription';
 import { CancelUseCase } from '@application/useCases/billing/CancelUseCase';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { RateLimit } from '@kernel/decorators/RateLimit';
 
 @Injectable()
+@RateLimit({ scope: 'account', limit: 10, windowSeconds: 3600 })
 export class CancelSubscriptionController extends Controller<'private'> {
 
   constructor(private readonly cancelUseCase: CancelUseCase) {

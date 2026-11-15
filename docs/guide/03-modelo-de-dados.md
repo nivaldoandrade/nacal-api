@@ -26,6 +26,7 @@ erDiagram
     ACCOUNT ||--o| SUBSCRIPTION : "tem"
     ACCOUNT ||--o{ MEAL : "registra"
     ACCOUNT ||--o| PENDING_SIGNUP : "antes da confirmação"
+    ACCOUNT ||--o| PENDING_CHECKOUT : "último checkout aberto"
     SUBSCRIPTION ||--o{ GATEWAY_REF : "checkout e assinatura no Asaas"
 
     ACCOUNT {
@@ -68,6 +69,11 @@ erDiagram
         string accountId
         string planId
     }
+    PENDING_CHECKOUT {
+        string checkoutUrl
+        string planId
+        number expiresAt "TTL de 60 min"
+    }
 ```
 
 Os atributos completos de cada entidade estão em [item collections](#item-collections).
@@ -88,6 +94,7 @@ Os atributos completos de cada entidade estão em [item collections](#item-colle
 | AP08 | Buscar refeição pelo id | Tabela | `PK = ACCOUNT#<accountId>MEAL#<mealId>`, `SK = MEAL#<mealId>` | `GetItem`. Consistente no polling, em remover e restaurar e na checagem de 15 min. Eventual em adicionar itens e excluir | `MealRepository.findById` |
 | AP09 | Buscar cadastro pendente | Tabela | `PK = SK = PENDING_SIGNUP#<accountId>` | `GetItem` consistente | `PendingSignUpRepository.findByAccountId` |
 | AP10 | Achar a conta de um ID do Asaas | Tabela | `PK = SK = GATEWAY#<checkoutId ou subscriptionId>` | `GetItem` | `SubscriptionRepository.findGatewayRef` |
+| AP13 | Último checkout aberto da conta | Tabela | `PK = SK = PENDING_CHECKOUT#<accountId>` | `GetItem` consistente | `SubscriptionRepository.findPendingCheckout` |
 | AP11 | Ler o uso da cota | `RateLimitTable` | `PK = RL#account-monthly#<accountId>` ou `RL#account-daily#<accountId>`, `SK = <bucket>` | `GetItem` | `RateLimitRepository.getQuotaCount` |
 | AP12 | Evento de webhook já processado? | `RateLimitTable` | `PK = RL#webhook-event#<eventId>`, `SK = EVENT` | `GetItem` | `RateLimitRepository.hasWebhookEvent` |
 
@@ -118,6 +125,7 @@ Quase toda escrita é condicional. A condição é o que garante a regra de neg�
 | AW17 | Consumir cota ou rate limit | `UpdateItem`, `ADD count 1` | `count < limite` | `RateLimitRepository.increment`, `incrementQuotaCounter` |
 | AW18 | Estornar cota | `UpdateItem`, `ADD count -1` | `count > 0` | `decrementQuotaCounter` |
 | AW19 | Marcar evento de webhook | `PutItem` com TTL | — | `markWebhookEvent` |
+| AW20 | Guardar o checkout aberto / apagar | `PutItem` com TTL / `DeleteItem` | Apagar: `checkoutId` igual ao do evento (um checkout mais novo não é apagado pelo webhook do antigo) | `savePendingCheckout`, `deletePendingCheckout` |
 
 ## Item collections
 
@@ -260,6 +268,22 @@ Cada item de `foods`:
 | `planId` | enum | `PRO_MONTHLY`, `PRO_YEARLY` |
 | `createdAt` | string (data) | |
 | `type` | string | `GATEWAY_REF` |
+
+### Collection do checkout aberto
+
+`PK = SK = PENDING_CHECKOUT#<accountId>`. Um item por conta, com o último checkout criado, para o `POST /billing/checkout` devolver o mesmo link em vez de criar outro (duas abas, dois aparelhos). Fica fora do `PK = ACCOUNT#<accountId>` para não entrar no `Query` com `Limit 5` do AP03. O TTL apaga quando o checkout expira, e os webhooks `CHECKOUT_*` apagam antes.
+
+| Atributo | Tipo | Observação |
+|---|---|---|
+| `accountId` | string | |
+| `planId` | enum | `PRO_MONTHLY`, `PRO_YEARLY` |
+| `returnUrl` | string | Só reaproveita com o mesmo `returnUrl` (o nativo usa o mesmo do web quando `EXPO_PUBLIC_WEB_URL` está definida; sem ela, um `nacal://`) |
+| `checkoutId` | string | |
+| `checkoutUrl` | string | |
+| `checkoutExpiresAt` | string (data) | Expiração do checkout no Asaas (60 min) |
+| `createdAt` | string (data) | |
+| `expiresAt` | number | TTL, igual ao `checkoutExpiresAt` |
+| `type` | string | `PENDING_CHECKOUT` |
 
 ### Collections da `RateLimitTable`
 
