@@ -40,6 +40,8 @@ Onde a meta é calculada:
 - no cadastro por e-mail, quando o `PendingSignUp` é aplicado ([cadastro](auth-cadastro-email.md));
 - no `complete-onboarding` do login com Google ([Google](auth-google-oauth.md)).
 
+As duas gravações só acontecem enquanto a conta não está onboarded (o `Put` da `Account` no `SignUpUOW` tem condição). Um `complete-onboarding` numa conta já onboarded responde `204` sem gravar, então não desfaz edições feitas por `PUT /profiles` e `POST /goals`.
+
 ## Edição
 
 ```mermaid

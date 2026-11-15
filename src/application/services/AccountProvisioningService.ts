@@ -68,7 +68,11 @@ export class AccountProvisioningService {
         isOnboarded: false,
       });
 
-      await this.accountsRepository.create(account);
+      const created = await this.accountsRepository.create(account);
+
+      if (!created) {
+        return await this.accountsRepository.findById(account.id) ?? account;
+      }
 
       return account;
     }
@@ -93,8 +97,12 @@ export class AccountProvisioningService {
 
     const goal = GoalCalculator.calculate(profile);
 
-    await this.signUpUOW.run({ account, goal, profile });
+    const written = await this.signUpUOW.run({ account, goal, profile });
     await this.deletePendingSignUp(pendingSignUp.accountId);
+
+    if (!written) {
+      return await this.accountsRepository.findById(account.id) ?? account;
+    }
 
     return account;
   }

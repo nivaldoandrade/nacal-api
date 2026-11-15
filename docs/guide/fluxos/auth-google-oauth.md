@@ -48,8 +48,13 @@ sequenceDiagram
     opt isOnboarded false
         U->>API: POST /auth/complete-onboarding com accessToken + perfil
         API->>Cog: GetUser
-        API->>DB: TransactWrite de Account onboarded + Profile + Goal
-        API-->>U: 204
+        API->>DB: busca a Account pelo e-mail
+        alt já onboarded
+            API-->>U: 204 sem gravar
+        else ainda não onboarded
+            API->>DB: TransactWrite de Account onboarded + Profile + Goal<br/>condição: Account ainda não onboarded
+            API-->>U: 204
+        end
     end
 ```
 
@@ -74,7 +79,10 @@ flowchart TD
     link --> done(["autoConfirmUser e autoVerifyEmail"])
 ```
 
-- **Cadastro por e-mail não confirmado + login com Google**: o Google prova o e-mail, então o trigger confirma o nativo e troca a senha por uma aleatória. O `PendingSignUp` desse cadastro é aplicado no callback, então os dados do onboarding não se perdem.
+- **Cadastro por e-mail não confirmado + login com Google**: o Google prova o e-mail, então o trigger confirma o nativo e troca a senha por uma aleatória. O `PendingSignUp` desse cadastro é **descartado** no callback (`skipPendingSignUp: true`): o Google prova quem é dono do e-mail, não quem preencheu o cadastro, que pode ter sido outra pessoa usando o e-mail alheio. A `Account` nasce com `isOnboarded: false`.
+  - Pela tela de login, o dono cai no onboarding e preenche os próprios dados.
+  - Se o dono estava no onboarding e terminou com o Google, o app recebe `isOnboarded: false` e manda o que ele preencheu no `complete-onboarding`.
+  - Custo aceito: quem fez o cadastro por e-mail de verdade, não confirmou o código e depois entrou com o Google refaz o onboarding. É a mesma regra do `confirm-sign-up`, que só aplica o `PendingSignUp` quando quem confirma sabe a senha.
 - O `preTokenGenerationTrigger` (V2) copia `custom:internalId` para o claim `internalId` do access token. É esse claim que o `lambdaHttpAdapter` lê como `accountId` em toda rota privada.
 
 ## Passo a passo
@@ -83,7 +91,7 @@ flowchart TD
 
 1. Troca `code` + `code_verifier` pelos tokens no endpoint `/oauth2/token` do domínio do Cognito, com timeout de 5 s. Resposta de erro do Cognito, resposta sem tokens, timeout ou falha de rede viram `400 INVALID_GRANT` (o `code` é de uso único, então tentar de novo exige repetir o login com o Google, que é o que o app pede). A Lambda tem timeout de 15 s.
 2. Lê o usuário com `GetUser` e exige `email`, `externalId`, `internalId` e `email_verified`. Faltou algo: `400 INVALID_GRANT`.
-3. Chama o [`AccountProvisioningService`](auth-cadastro-email.md#accountprovisioningservice-o-ponto-único-de-criação-de-conta): devolve a `Account` existente, aplica um `PendingSignUp` válido ou cria uma `Account` com `isOnboarded: false`.
+3. Chama o [`AccountProvisioningService`](auth-cadastro-email.md#accountprovisioningservice-o-ponto-único-de-criação-de-conta): com `skipPendingSignUp: true`. Devolve a `Account` existente ou cria uma com `isOnboarded: false`. Um `PendingSignUp` do mesmo usuário é apagado sem ser aplicado (ver acima).
 4. Responde `200` com `{ accessToken, refreshToken, isOnboarded }`.
 
 ### Onboarding (`POST /auth/complete-onboarding`)
@@ -92,7 +100,8 @@ Rota **pública** no API Gateway: o `accessToken` vai no corpo e a API valida ch
 
 1. Lê `name`, `email` e `externalId` do usuário.
 2. Busca a `Account` pelo e-mail. Não existe: `404 RESOURCE_NOT_FOUND`. Existe com outro `externalId`: `409 EMAIL_ALREADY_IN_USE`. É a exceção à regra de buscar a conta pelo `internalId` (ver [cadastro por e-mail](auth-cadastro-email.md#accountprovisioningservice-o-ponto-único-de-criação-de-conta)). A checagem do `externalId` é o que impede usar a conta de outra pessoa.
-3. Cria `Profile` e `Goal`, recalcula a meta e marca a conta como `isOnboarded`, com os termos aceitos agora, numa transação só (`SignUpUOW`, com `Put` sem condição). O retry com o **mesmo corpo** é seguro. A rota não confere `isOnboarded`: uma chamada com outros dados sobrescreve perfil e meta, inclusive de uma conta já onboarded, e apaga edições feitas depois por `PUT /profiles` e `POST /goals`.
+3. Conta já onboarded: responde `204` sem gravar nada. Perfil, meta e `termsAcceptedAt` ficam como estão, inclusive edições feitas depois por `PUT /profiles` e `POST /goals`. Um retry depois de uma resposta perdida também recebe `204`.
+4. Cria `Profile` e `Goal`, recalcula a meta e marca a conta como `isOnboarded`, com os termos aceitos agora, numa transação só (`SignUpUOW`). O `Put` da `Account` tem condição (`attribute_not_exists(PK) OR isOnboarded = false`): se duas chamadas chegam juntas, ou se a leitura pelo GSI1 (eventual) ainda não viu o onboarding, a segunda transação é cancelada inteira e a rota responde `204` sem gravar. Se o DynamoDB cancelar por conflito com a outra transação em andamento (`TransactionConflict`), o `SignUpUOW` tenta mais uma vez, e essa tentativa esbarra na condição. Um segundo conflito seguido sai como `500`.
 
 Como o claim `internalId` já vem no primeiro token, o app não precisa renovar o token depois do onboarding.
 

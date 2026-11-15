@@ -102,7 +102,7 @@ flowchart TD
     prov2 --> ok2(["200<br/>passwordResetRequired true"])
 ```
 
-Se o usuário já estiver confirmado, a API **não** aplica o `PendingSignUp` nesse caminho: a request não prova nada sobre quem a enviou. Quem aplica é o `GET /me` depois de um login com senha, ou o callback do Google.
+Se o usuário já estiver confirmado, a API **não** aplica o `PendingSignUp` nesse caminho: a request não prova nada sobre quem a enviou. Quem aplica é o `GET /me` depois de um login com senha. O callback do Google descarta o `PendingSignUp` (ver [login com Google](auth-google-oauth.md#o-usuário-shadow-nativo)).
 
 ### Reenvio do código (`POST /auth/resend-confirmation-code`)
 
@@ -115,7 +115,7 @@ Três caminhos criam a `Account` e todos passam pelo mesmo serviço, que é **id
 ```mermaid
 flowchart LR
     a["confirm-sign-up<br/>código + senha"] --> svc
-    b["oauth/callback<br/>login com Google"] --> svc
+    b["oauth/callback<br/>login com Google<br/>descarta o PendingSignUp"] --> svc
     c["GET /me<br/>conta faltando depois do login"] --> svc
     svc["AccountProvisioningService.ensureAccount"] --> d{"Account já existe<br/>e está onboarded?"}
     d -- "sim" --> ret(["devolve a Account"])
@@ -127,7 +127,9 @@ flowchart LR
 ```
 
 - A busca é pelo `internalId` (atributo imutável do Cognito), nunca pelo e-mail. O e-mail só serve para detectar conflito.
+- Quem chama decide se o `PendingSignUp` pode ser aplicado (`skipPendingSignUp`). Ele só é aplicado quando quem chega prova a autoria do cadastro, ou seja, sabe a senha: `confirm-sign-up` com a senha certa e `GET /me` depois de um login com senha. O `confirm-sign-up` com a senha errada e o callback do Google apagam o `PendingSignUp` e criam a `Account` sem onboarding.
 - A `Goal` é calculada pelo `GoalCalculator` a partir do perfil.
+- O `SignUpUOW` grava a `Account` com condição (`attribute_not_exists(PK) OR isOnboarded = false`). Se duas chamadas aplicam o mesmo `PendingSignUp` ao mesmo tempo, a segunda transação é cancelada e o serviço devolve a `Account` relida do banco, sem erro (com uma nova tentativa se o cancelamento for por `TransactionConflict`). A `Account` sem onboarding também é criada com condição (`attribute_not_exists(PK)`): se outro caminho já gravou a conta, o serviço devolve a que está no banco em vez de sobrescrevê-la com `isOnboarded: false`.
 - Se a criação falhar depois de o usuário ser confirmado, o próximo `GET /me` cria a conta (ele chama o serviço quando não acha a `Account`).
 
 ## E-mails

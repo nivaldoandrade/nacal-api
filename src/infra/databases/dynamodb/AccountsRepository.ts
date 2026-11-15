@@ -1,4 +1,5 @@
 import { Account } from '@application/entities/Account';
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 import { GetCommand, PutCommand, PutCommandInput, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { dynamodbClient } from '@infra/clients/dynamodbClient';
 import { AccountItem } from '@infra/databases/dynamodb/items/AccountItem';
@@ -66,12 +67,38 @@ export class AccountsRepository {
     };
   }
 
-  async create(account: Account): Promise<void> {
+  getOnboardingPutCommandInput(account: Account): PutCommandInput {
+    return {
+      ...this.getPutCommandInput(account),
+      ConditionExpression: 'attribute_not_exists(#PK) OR #isOnboarded = :notOnboarded',
+      ExpressionAttributeNames: {
+        '#PK': 'PK',
+        '#isOnboarded': 'isOnboarded',
+      },
+      ExpressionAttributeValues: {
+        ':notOnboarded': false,
+      },
+    };
+  }
 
-    const putCommandInput = this.getPutCommandInput(account);
+  async create(account: Account): Promise<boolean> {
+    const command = new PutCommand({
+      ...this.getPutCommandInput(account),
+      ConditionExpression: 'attribute_not_exists(#PK)',
+      ExpressionAttributeNames: {
+        '#PK': 'PK',
+      },
+    });
 
-    const command = new PutCommand(putCommandInput);
+    try {
+      await dynamodbClient.send(command);
+      return true;
+    } catch (error) {
+      if (error instanceof ConditionalCheckFailedException) {
+        return false;
+      }
 
-    await dynamodbClient.send(command);
+      throw error;
+    }
   }
 }

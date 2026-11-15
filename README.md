@@ -441,7 +441,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
   }
   ```
 
-- `isOnboarded: false` indica um usuário novo — o backend cria a `Account` no DynamoDB com `isOnboarded: false`, então o frontend deve chamar `/auth/complete-onboarding` com o `accessToken` retornado. Para um usuário já registrado, `isOnboarded: true` e a conta existente é reutilizada. O `accessToken` já contém o claim `internalId` (usado como `accountId` nas rotas autenticadas).
+- `isOnboarded: false` indica um usuário novo — o backend cria a `Account` no DynamoDB com `isOnboarded: false`, então o frontend deve chamar `/auth/complete-onboarding` com o `accessToken` retornado. Para um usuário já registrado, `isOnboarded: true` e a conta existente é reutilizada. Um cadastro por e-mail ainda não confirmado com o mesmo e-mail tem o `PendingSignUp` descartado (o Google prova o e-mail, não quem preencheu o cadastro), então a conta volta com `isOnboarded: false` e passa pelo onboarding. O `accessToken` já contém o claim `internalId` (usado como `accountId` nas rotas autenticadas).
 - Erros: `400 INVALID_GRANT` (code inválido ou expirado, resposta do Cognito sem tokens ou token sem dados de identidade) e `400 VALIDATION` (body inválido). Timeout de 5s na troca de código com o Cognito; timeout ou falha de rede nessa troca também viram `400 INVALID_GRANT` (Lambda com timeout de 15s).
 
 #### Complete Onboarding -> `/auth/complete-onboarding`
@@ -464,8 +464,8 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 - Resposta esperada: `204 No Content`.
 - O backend reutiliza a `Account` criada no callback, grava `Profile` e `Goal` e marca `isOnboarded: true` atomicamente (`TransactWriteCommand`).
-- **Idempotente**: reexecutar após sucesso re-grava os mesmos itens com o mesmo `accountId` e retorna `204`.
-- Erros: `409 EMAIL_ALREADY_IN_USE` (email já pertence a outra conta, `externalId` divergente), `400 INVALID_GRANT` (token inválido/expirado ou dados ausentes no Cognito), `404 ACCOUNT_NOT_FOUND` (token válido sem `Account` registrada) e `400 VALIDATION` (body inválido).
+- **Conta já onboarded**: responde `204` sem gravar (perfil, metas e `termsAcceptedAt` não mudam, nem as edições feitas por `PUT /profiles` e `POST /goals`). O `Put` da `Account` na transação tem condição (`attribute_not_exists(PK) OR isOnboarded = false`), então duas chamadas simultâneas gravam uma vez só; a outra também recebe `204` (se o DynamoDB acusar `TransactionConflict`, a transação é tentada mais uma vez).
+- Erros: `409 EMAIL_ALREADY_IN_USE` (email já pertence a outra conta, `externalId` divergente), `400 INVALID_GRANT` (token inválido/expirado ou dados ausentes no Cognito), `404 RESOURCE_NOT_FOUND` (token válido sem `Account` registrada) e `400 VALIDATION` (body inválido).
 - Não é necessário trocar o token após o sucesso: o `accessToken` do callback já contém o claim `internalId`.
 
 #### Get Me -> `/me`

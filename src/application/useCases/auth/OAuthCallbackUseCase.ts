@@ -32,12 +32,11 @@ export class OAuthCallbackUseCase {
       throw new InvalidOAuthGrant('Email is not verified.');
     }
 
-    // Applies the PendingSignUp of a native user who skipped the email code and signed in with
-    // Google instead (the PreSignUp trigger confirms them), so the onboarding data is kept.
     const account = await this.accountProvisioningService.ensureAccount({
       email,
       internalId,
       externalId,
+      skipPendingSignUp: true,
     });
 
     return {

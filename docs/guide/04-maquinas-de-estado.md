@@ -75,10 +75,11 @@ stateDiagram-v2
     pending --> pending: sign-up repetido<br/>substitui o anterior
     pending --> onboarded: código + senha certa
     pending --> notOnboarded: código + senha diferente
-    pending --> onboarded: login com Google<br/>aplica o PendingSignUp
+    pending --> notOnboarded: login com Google<br/>descarta o PendingSignUp
     pending --> none: 24 h sem confirmar<br/>TTL apaga o PendingSignUp
     none --> notOnboarded: primeiro login com Google
     notOnboarded --> onboarded: POST /auth/complete-onboarding
+    onboarded --> onboarded: POST /auth/complete-onboarding<br/>204 sem gravar
     pending --> orphan: confirmou, mas a gravação<br/>da Account falhou
     orphan --> onboarded: GET /me depois do login<br/>aplica o PendingSignUp válido
     orphan --> notOnboarded: GET /me sem PendingSignUp válido

@@ -41,6 +41,10 @@ export class CompleteOnboardingUseCase {
       throw new EmailAlreadyInUse();
     }
 
+    if (existingAccount.isOnboarded) {
+      return;
+    }
+
     const profile = new Profile({
       accountId: existingAccount.id,
       ...profileInput,

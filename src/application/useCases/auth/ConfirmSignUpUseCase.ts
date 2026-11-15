@@ -26,8 +26,8 @@ export class ConfirmSignUpUseCase {
 
     if (user.status === 'CONFIRMED') {
       // The code can no longer be verified, so this request proves nothing about who sent it.
-      // Never provision or apply the pending sign-up here; GET /me (after a password sign-in) or
-      // the Google callback does that once the user proves ownership.
+      // Never provision or apply the pending sign-up here; GET /me (after a password sign-in)
+      // does that once the user proves ownership.
       await this.ensureAlreadyConfirmed(user.internalId);
       return { passwordResetRequired: false };
     }
