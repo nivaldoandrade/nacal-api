@@ -2,6 +2,7 @@ import { PendingSignUp } from '@application/entities/PendingSignUp';
 import { Profile } from '@application/entities/Profile';
 import { BetaAccessDenied } from '@application/errors/application/BetaAccessDenied';
 import { EmailAlreadyInUse } from '@application/errors/application/EmailAlreadyInUse';
+import { EmailLinkedToGoogle } from '@application/errors/application/EmailLinkedToGoogle';
 import { AccountsRepository } from '@infra/databases/dynamodb/AccountsRepository';
 import { PendingSignUpRepository } from '@infra/databases/dynamodb/PendingSignUpRepository';
 import { AuthGateway } from '@infra/gateways/AuthGateway';
@@ -34,7 +35,7 @@ export class SignUpUseCase {
     const emailIsAlreadyInUse = await this.accountsRepository.findByEmail(email);
 
     if (emailIsAlreadyInUse) {
-      throw new EmailAlreadyInUse();
+      throw this.emailInUseError(await this.authGateway.getUserByEmail(email));
     }
 
     try {
@@ -53,7 +54,7 @@ export class SignUpUseCase {
     const existingUser = await this.authGateway.getUserByEmail(email);
 
     if (!existingUser || existingUser.status !== 'UNCONFIRMED') {
-      throw new EmailAlreadyInUse();
+      throw this.emailInUseError(existingUser);
     }
 
     // The previous attempt was never confirmed, so nothing else references it. Replace it so the
@@ -78,6 +79,14 @@ export class SignUpUseCase {
       requiresConfirmation: true,
       alreadyPending: true,
     };
+  }
+
+  private emailInUseError(user: { linkedProviders: string[] } | null): EmailAlreadyInUse | EmailLinkedToGoogle {
+    if (user?.linkedProviders.includes('Google')) {
+      return new EmailLinkedToGoogle();
+    }
+
+    return new EmailAlreadyInUse();
   }
 
   private async createPendingSignUp({

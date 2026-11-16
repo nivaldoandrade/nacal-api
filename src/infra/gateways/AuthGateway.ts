@@ -253,6 +253,7 @@ export class AuthGateway {
         externalId: attrs['sub'] ?? null,
         internalId: attrs['custom:internalId'] ?? null,
         status: UserStatus ?? null,
+        linkedProviders: parseLinkedProviders(attrs['identities']),
       };
     } catch (error) {
       if (error instanceof UserNotFoundException) {
@@ -389,6 +390,7 @@ namespace AuthGateway {
     externalId: string | null;
     internalId: string | null;
     status: string | null;
+    linkedProviders: string[];
   }
 
   export type ConfirmSignUp = {
@@ -415,5 +417,25 @@ namespace AuthGateway {
       password: string;
       confirmationCode: string;
     }
+  }
+}
+
+function parseLinkedProviders(identities: string | null | undefined): string[] {
+  if (!identities) {
+    return [];
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(identities);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((identity) => (identity as { providerName?: unknown })?.providerName)
+      .filter((providerName): providerName is string => typeof providerName === 'string');
+  } catch {
+    return [];
   }
 }

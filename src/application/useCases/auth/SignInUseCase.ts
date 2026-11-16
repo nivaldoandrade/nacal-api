@@ -1,9 +1,10 @@
 import { ApplicationError } from '@application/errors/application/ApplicationError';
+import { EmailLinkedToGoogle } from '@application/errors/application/EmailLinkedToGoogle';
 import { EmailNotConfirmed } from '@application/errors/application/EmailNotConfirmed';
 import { InvalidCredentials } from '@application/errors/application/InvalidCredentials';
 import { AuthGateway } from '@infra/gateways/AuthGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
-import { UserNotConfirmedException } from '@aws-sdk/client-cognito-identity-provider';
+import { NotAuthorizedException, UserNotConfirmedException } from '@aws-sdk/client-cognito-identity-provider';
 
 @Injectable()
 export class SignInUseCase {
@@ -28,7 +29,22 @@ export class SignInUseCase {
         throw error;
       }
 
+      if (error instanceof NotAuthorizedException && await this.isLinkedToGoogle(email)) {
+        throw new EmailLinkedToGoogle();
+      }
+
       throw new InvalidCredentials();
+    }
+  }
+
+  private async isLinkedToGoogle(email: string): Promise<boolean> {
+    try {
+      const username = await this.authGateway.resolveUsername(email);
+      const user = await this.authGateway.getUserByEmail(username);
+
+      return user?.linkedProviders.includes('Google') ?? false;
+    } catch {
+      return false;
     }
   }
 }

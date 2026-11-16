@@ -35,6 +35,8 @@ sequenceDiagram
     API->>Cog: InitiateAuth USER_PASSWORD_AUTH + SECRET_HASH
     alt e-mail não confirmado
         API-->>U: 403 EMAIL_NOT_CONFIRMED
+    else senha errada num e-mail ligado ao Google
+        API-->>U: 409 EMAIL_LINKED_TO_GOOGLE
     else senha errada ou usuário inexistente
         API-->>U: 401 INVALID_CREDENTIALS
     end
@@ -52,6 +54,7 @@ sequenceDiagram
 ```
 
 - **Senha errada e usuário inexistente dão o mesmo erro** (`INVALID_CREDENTIALS`), para não revelar quais e-mails têm conta.
+- **Exceção: e-mail ligado ao Google.** Quando o Cognito recusa a senha (`NotAuthorizedException`) e o usuário tem a identidade `Google` no atributo `identities`, a resposta é `409 EMAIL_LINKED_TO_GOOGLE`. O usuário nativo criado pelo `preSignUpTrigger` tem uma senha aleatória, então sem esse erro quem entrou pelo Google e depois tenta a senha só veria "e-mail ou senha incorretos". Isso revela que o e-mail tem conta Google, o mesmo que o `sign-up` já revelava com `EMAIL_ALREADY_IN_USE`. O app sugere "Continuar com o Google" ou "Esqueci minha senha" (que cria uma senha para esse usuário).
 - **`resolveUsername`**: usuários antigos podem ter sido criados com o e-mail exatamente como foi digitado (com maiúsculas). A API tenta o e-mail normalizado e, se não existir, o original.
 - **`GET /me` conserta conta faltando.** Se o usuário existe no Cognito mas não tem `Account` (a criação falhou depois da confirmação), o `GET /me` cria a conta na hora, aplicando o `PendingSignUp` se ele ainda for válido. Ele exige `email_verified` e que o `internalId` do token seja o mesmo da request.
 
@@ -117,6 +120,7 @@ Esse também é o caminho de recuperação de quem confirmou o cadastro com uma 
 | Situação | Resposta |
 |---|---|
 | Senha errada ou usuário inexistente | `401 INVALID_CREDENTIALS` |
+| Senha errada num e-mail ligado ao Google | `409 EMAIL_LINKED_TO_GOOGLE` |
 | E-mail não confirmado | `403 EMAIL_NOT_CONFIRMED` |
 | Refresh token inválido, expirado, já usado fora dos 60 s ou de usuário apagado | `401 INVALID_REFRESH_TOKEN` |
 | Throttling do Cognito no login ou no refresh (`LimitExceeded`, `TooManyFailedAttempts`, `TooManyRequests`) | `429 TOO_MANY_ATTEMPTS` |

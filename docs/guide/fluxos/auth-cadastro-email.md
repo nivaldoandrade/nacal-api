@@ -75,7 +75,7 @@ Antes, a conta era criada já no sign-up. O problema: **qualquer um pode cadastr
 
 1. Valida o corpo: `acceptedTerms` tem que ser `true`, a senha tem pelo menos 8 caracteres, e o perfil vem completo (nome, gênero, altura, peso, nível de atividade, objetivo e nascimento).
 2. Normaliza o e-mail (`normalizeEmail`) e checa o beta.
-3. Se já existe `Account` com o e-mail, `409 EMAIL_ALREADY_IN_USE`.
+3. Se já existe `Account` com o e-mail, `409 EMAIL_ALREADY_IN_USE`, ou `409 EMAIL_LINKED_TO_GOOGLE` se o usuário do Cognito tem a identidade `Google`. O mesmo vale quando o usuário do Cognito existe e já está confirmado, mesmo sem `Account`: é o caso de quem começou o login com Google e não terminou (o `preSignUpTrigger` cria o usuário nativo, mas a `Account` só nasce no `oauth/callback`).
 4. Gera o `accountId` e cria o usuário no Cognito com `custom:internalId = accountId`. O e-mail é o `username`.
 5. Grava o `PendingSignUp` (perfil, versão dos termos, `expiresAt` em 24 h, apagado pelo TTL do DynamoDB). Se a gravação falhar, apaga o usuário do Cognito.
 6. **Cadastro repetido de um e-mail ainda não confirmado**: o Cognito responde `UsernameExistsException`. A API apaga o usuário antigo e o `PendingSignUp` antigo e cria de novo, com a senha e o perfil novos e um código novo. A resposta vem com `alreadyPending: true`.
@@ -151,6 +151,7 @@ Para ver os e-mails renderizados no navegador: `npx tsx scripts/previewEmails.ts
 |---|---|
 | E-mail fora do beta | `403 BETA_ACCESS_DENIED` |
 | E-mail já tem conta (no cadastro ou no provisionamento da confirmação) | `409 EMAIL_ALREADY_IN_USE` |
+| No cadastro, o e-mail já está no Cognito ligado ao Google (com ou sem `Account`) | `409 EMAIL_LINKED_TO_GOOGLE` |
 | Código errado, expirado, usuário inexistente ou sem `internalId`/`externalId` | `400 INVALID_CONFIRMATION_CODE` |
 | Corpo fora do schema | `400 VALIDATION` |
 | Muitas tentativas no Cognito | `429 TOO_MANY_ATTEMPTS` |

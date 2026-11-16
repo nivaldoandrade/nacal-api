@@ -27,6 +27,7 @@ O app decide o que mostrar pelo `code`, nunca pelo `message`, que é em inglês 
 | 403 | `FREE_QUOTA_EXCEEDED` | Free sem refeições no mês | `create-meal`, `meals/text`, `meals/{id}/items` |
 | 404 | `RESOURCE_NOT_FOUND` | Refeição, item, perfil, meta ou conta não existe | Várias |
 | 409 | `EMAIL_ALREADY_IN_USE` | E-mail já tem conta (ou é de outro `internalId`) | `sign-up`, `confirm-sign-up`, `oauth/callback`, `complete-onboarding`, `GET /me` |
+| 409 | `EMAIL_LINKED_TO_GOOGLE` | E-mail ligado a uma conta Google: cadastro com e-mail já existente ou senha errada no login | `sign-up`, `sign-in` |
 | 409 | `MEAL_NOT_EDITABLE` | Refeição fora de `SUCCESS`, fora da janela de 24 h ou ainda processando | Rotas de itens, `DELETE /meals/{id}` |
 | 409 | `MEAL_ITEM_LIMIT_REACHED` | 5 adições ou 30 itens | `meals/{id}/items`, `restore` |
 | 409 | `MEAL_LAST_ITEM` | Tentou remover o único item | `DELETE .../items/{itemId}` |

@@ -357,7 +357,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
   }
   ```
 
-- Erros: `403 BETA_ACCESS_DENIED` (e-mail fora do beta), `409 EMAIL_ALREADY_IN_USE` (e-mail já confirmado), `429 TOO_MANY_ATTEMPTS`.
+- Erros: `403 BETA_ACCESS_DENIED` (e-mail fora do beta), `409 EMAIL_ALREADY_IN_USE` (e-mail já confirmado), `409 EMAIL_LINKED_TO_GOOGLE` (e-mail já no Cognito ligado ao Google), `429 TOO_MANY_ATTEMPTS`.
 
 #### Confirm Sign Up -> `/auth/confirm-sign-up`
 
@@ -416,7 +416,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
   }
   ```
 
-- Erros: `401 INVALID_CREDENTIALS`, `403 EMAIL_NOT_CONFIRMED` (cadastro ainda sem código confirmado), `429 TOO_MANY_ATTEMPTS`.
+- Erros: `401 INVALID_CREDENTIALS`, `409 EMAIL_LINKED_TO_GOOGLE` (senha errada num e-mail ligado ao Google), `403 EMAIL_NOT_CONFIRMED` (cadastro ainda sem código confirmado), `429 TOO_MANY_ATTEMPTS`.
 
 #### OAuth Callback -> `/auth/oauth/callback`
 
