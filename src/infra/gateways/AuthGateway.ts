@@ -4,10 +4,12 @@ import { CodeDeliveryFailed } from '@application/errors/application/CodeDelivery
 import { InvalidOAuthGrant } from '@application/errors/application/InvalidOAuthGrant';
 import { InvalidRefreshToken } from '@application/errors/application/InvalidRefreshToken';
 import { TooManyAttempts } from '@application/errors/application/TooManyAttempts';
+import { Unauthorized } from '@application/errors/http/Unauthorized';
 import { AdminDeleteUserCommand, AdminSetUserPasswordCommand, AdminGetUserCommand, CodeDeliveryFailureException, ConfirmForgotPasswordCommand, ConfirmSignUpCommand, ForgotPasswordCommand, GetTokensFromRefreshTokenCommand, GetUserCommand, InitiateAuthCommand, LimitExceededException, NotAuthorizedException, RefreshTokenReuseException, ResendConfirmationCodeCommand, SignUpCommand, TooManyFailedAttemptsException, TooManyRequestsException, UserNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { cognitoClient } from '@infra/clients/cognitoClient';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { logger } from '@shared/logger/logger';
 import { isFetchFailure } from '@shared/utils/isFetchFailure';
 import { normalizeEmail } from '@shared/utils/normalizeEmail';
 
@@ -41,8 +43,7 @@ export class AuthGateway {
       tokens = await this.requestTokens(authorizationToken, body);
     } catch (error) {
       if (isFetchFailure(error)) {
-        // eslint-disable-next-line no-console
-        console.error('OAuth code exchange failed:', error);
+        logger.error('oauth code exchange failed', { error });
         throw new InvalidOAuthGrant('Code exchange timed out or failed.');
       }
 
@@ -74,6 +75,10 @@ export class AuthGateway {
     } catch (error) {
       if (error instanceof NotAuthorizedException) {
         throw new InvalidOAuthGrant('Invalid or expired access token.');
+      }
+
+      if (error instanceof UserNotFoundException) {
+        throw new Unauthorized('User not found.');
       }
 
       throw error;

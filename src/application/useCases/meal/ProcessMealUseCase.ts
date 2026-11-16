@@ -7,6 +7,7 @@ import { MealGateGateway } from '@infra/ai/gateways/MealGateGateway';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 @Injectable()
 export class ProcessMealUseCase {
@@ -20,6 +21,8 @@ export class ProcessMealUseCase {
   ) { }
 
   async execute({ accountId, mealId }: ProcessMealUseCase.Input): Promise<void> {
+    logger.appendContext({ accountId, mealId });
+
     const meal = await this.mealRepository.findById({
       accountId,
       mealId,
@@ -46,9 +49,17 @@ export class ProcessMealUseCase {
     });
 
     if (!claimedMeal) {
+      logger.warn('meal claim skipped', { status: meal.status, attempts: meal.attempts });
       await this.markFailedIfExhausted({ accountId, mealId, now });
       return;
     }
+
+    const startedAt = Date.now();
+
+    logger.info('meal processing started', {
+      inputType: claimedMeal.inputType,
+      attempt: claimedMeal.attempts,
+    });
 
     try {
       const inputFile = await this.mealStorageGateway.getObjectBytes(claimedMeal.requireInputFileKey());
@@ -121,6 +132,12 @@ export class ProcessMealUseCase {
 
         throw new Error(`Meal ${mealId} could not be marked as success.`);
       }
+
+      logger.info('meal processed', {
+        status: Meal.StatusType.SUCCESS,
+        foodsCount: claimedMeal.foods.length,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
       if (error instanceof MealRejectedError) {
         const rejection = await this.mealRepository.rejectAndRefund({
@@ -129,12 +146,25 @@ export class ProcessMealUseCase {
           gateScore: error.gateScore,
         });
 
+        logger.info('meal rejected', {
+          status: Meal.StatusType.REJECTED,
+          reason: error.reason,
+          rejected: rejection.rejected,
+          durationMs: Date.now() - startedAt,
+        });
+
         if (rejection.rejected) {
           await this.mealStorageGateway.deleteInputFile(claimedMeal.inputFileKey);
         }
 
         return;
       }
+
+      logger.warn('meal processing attempt failed', {
+        attempt: claimedMeal.attempts,
+        durationMs: Date.now() - startedAt,
+        error,
+      });
 
       const retryable = await this.handleFailure(claimedMeal);
 
@@ -149,6 +179,7 @@ export class ProcessMealUseCase {
       const failure = await this.mealRepository.failAndRefund({ meal });
 
       if (failure.failed) {
+        logger.metric('MealFailed', { source: 'attemptsExhausted', attempts: meal.attempts });
         await this.mealStorageGateway.deleteInputFile(meal.inputFileKey);
       }
 
@@ -196,6 +227,7 @@ export class ProcessMealUseCase {
     const failure = await this.mealRepository.failAndRefund({ meal });
 
     if (failure.failed) {
+      logger.metric('MealFailed', { source: 'leaseExpired', attempts: meal.attempts });
       await this.mealStorageGateway.deleteInputFile(meal.inputFileKey);
     }
   }

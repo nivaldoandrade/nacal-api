@@ -1,0 +1,88 @@
+Resources:
+  HttpApi5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: !If
+        - IsProd
+        - true
+        - false
+      AlarmName: ${self:service}-${sls:stage}-HttpApi5xxAlarm
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApi
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Threshold: 3
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DQLAlarmTopic
+
+  AsaasWebhookNon2xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: !If
+        - IsProd
+        - true
+        - false
+      AlarmName: ${self:service}-${sls:stage}-AsaasWebhookNon2xxAlarm
+      Namespace: NaCal
+      MetricName: WebhookNon2xx
+      Dimensions:
+        - Name: Service
+          Value: ${self:service}-${sls:stage}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DQLAlarmTopic
+
+  MealFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: !If
+        - IsProd
+        - true
+        - false
+      AlarmName: ${self:service}-${sls:stage}-MealFailedAlarm
+      Namespace: NaCal
+      MetricName: MealFailed
+      Dimensions:
+        - Name: Service
+          Value: ${self:service}-${sls:stage}
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DQLAlarmTopic
+
+  ProcessMealThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: !If
+        - IsProd
+        - true
+        - false
+      AlarmName: ${self:service}-${sls:stage}-ProcessMealThrottlesAlarm
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ProcessMealLambdaFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DQLAlarmTopic

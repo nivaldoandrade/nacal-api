@@ -1,6 +1,6 @@
-/* eslint-disable no-console */
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { logger } from '@shared/logger/logger';
 
 const GATE_MODEL = '@cf/cloudflare/clef-flash';
 const GATE_MODEL_NAME = 'clef-flash';
@@ -84,27 +84,25 @@ export class MealGateGateway {
 
       const decision = score < gateConfig.rejectThreshold ? 'REJECT' : 'ACCEPT';
 
-      console.info(JSON.stringify({
-        event: 'meal_gate',
+      logger.info('meal_gate', {
         mealId,
         decision,
         score,
         threshold: gateConfig.rejectThreshold,
         latencyMs: Date.now() - startedAt,
         inputTokens: body.result?.usage?.input_tokens ?? null,
-      }));
+      });
 
       return {
         decision,
         score,
       };
     } catch (error) {
-      console.error(JSON.stringify({
-        event: 'meal_gate_error',
+      logger.error('meal_gate_error', {
         mealId,
         latencyMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.name : 'unknown',
-      }));
+        error,
+      });
 
       return {
         decision: 'SKIP',

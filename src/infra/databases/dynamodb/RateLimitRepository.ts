@@ -4,6 +4,7 @@ import { GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { dynamodbClient } from '@infra/clients/dynamodbClient';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { logger } from '@shared/logger/logger';
 import { getLocalDay } from '@shared/utils/timeZone';
 
 @Injectable()
@@ -49,7 +50,7 @@ export class RateLimitRepository {
         return null;
       }
 
-      console.error(error);
+      logger.error('rate limit check failed', { error });
       throw error;
     }
   }
@@ -88,7 +89,7 @@ export class RateLimitRepository {
         return null;
       }
 
-      console.error(error);
+      logger.error('rate limit check failed', { error });
       throw error;
     }
   }

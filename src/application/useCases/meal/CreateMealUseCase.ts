@@ -6,6 +6,7 @@ import { SubscriptionRepository } from '@infra/databases/dynamodb/SubscriptionRe
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { MealUploadCheckQueueGateway } from '@infra/gateways/MealUploadCheckQueueGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 import { generateUniqueId } from '@shared/utils/generateUniqueId';
 
 @Injectable()
@@ -65,8 +66,7 @@ export class CreateMealUseCase {
       try {
         await this.mealQuotaService.refund({ accountId, quotaMonth, quotaDay });
       } catch (refundError) {
-        // eslint-disable-next-line no-console
-        console.error(`Failed to refund meal quota for account ${accountId}:`, refundError);
+        logger.error('failed to refund meal quota', { accountId, error: refundError });
       }
 
       throw error;

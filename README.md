@@ -27,7 +27,8 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
-- **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues) e quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min);
+- **Alarmes**: Notificação por email (só em prod) quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues), quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min), quando o HTTP API responde `5xx` (3 em 5 min), quando o webhook do Asaas responde algo diferente de 2xx, quando uma refeição vira `FAILED` e quando a `processMeal` sofre throttling;
+- **Observabilidade**: logs JSON com uma linha por request (`routeKey`, `statusCode`, latência, erro), transições do processamento de refeições, `usage` de tokens de cada chamada à OpenAI, métricas EMF (`MealFailed`, `WebhookNon2xx`), access log do HTTP API, retenção de 30 dias e sourcemaps nas stacks de erro;
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
 - **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade (estorno total e chargeback descontam o ciclo pago e cancelam a mensal no Asaas, com alerta por e-mail), reconciliação horária dos pagamentos confirmados e estornados (ativa ou desconta o que o webhook não aplicou e avisa por e-mail) e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s), além de `reservedConcurrency: 5` na função;
 - **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
@@ -465,7 +466,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 - Resposta esperada: `204 No Content`.
 - O backend reutiliza a `Account` criada no callback, grava `Profile` e `Goal` e marca `isOnboarded: true` atomicamente (`TransactWriteCommand`).
 - **Conta já onboarded**: responde `204` sem gravar (perfil, metas e `termsAcceptedAt` não mudam, nem as edições feitas por `PUT /profiles` e `POST /goals`). O `Put` da `Account` na transação tem condição (`attribute_not_exists(PK) OR isOnboarded = false`), então duas chamadas simultâneas gravam uma vez só; a outra também recebe `204` (se o DynamoDB acusar `TransactionConflict`, a transação é tentada mais uma vez).
-- Erros: `409 EMAIL_ALREADY_IN_USE` (email já pertence a outra conta, `externalId` divergente), `400 INVALID_GRANT` (token inválido/expirado ou dados ausentes no Cognito), `404 RESOURCE_NOT_FOUND` (token válido sem `Account` registrada) e `400 VALIDATION` (body inválido).
+- Erros: `409 EMAIL_ALREADY_IN_USE` (email já pertence a outra conta, `externalId` divergente), `400 INVALID_GRANT` (token inválido/expirado ou dados ausentes no Cognito), `401 UNAUTHORIZED` (usuário do token apagado do Cognito), `404 RESOURCE_NOT_FOUND` (token válido sem `Account` registrada) e `400 VALIDATION` (body inválido).
 - Não é necessário trocar o token após o sucesso: o `accessToken` do callback já contém o claim `internalId`.
 
 #### Get Me -> `/me`
@@ -509,7 +510,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 - `subscription` é `null` sem item de assinatura (plano FREE); `plan` é o **plano efetivo** derivado de `resolveEffectivePlan` (trial/pago vigente = `PRO`, vencido = `FREE`); `mealQuota` é a cota do mês: no FREE, `limit` é `20`; no PRO, `used` conta as refeições Pro do mês e `limit`/`remaining` são `null`. `dailyMealQuota` é `null` no FREE e, no PRO, traz a cota do dia (`limit` 20, dia em `America/Sao_Paulo`);
 - Para um usuário que ainda não completou o onboarding, o endpoint responde `200` com `isOnboarded: false` e `profile`/`goal` como `null` — usado pelo frontend para decidir se encaminha o usuário ao onboarding.
-- O `accountId` é resolvido a partir do claim `internalId` do access token; se o token não tiver o claim, retorna `401`. Se a conta não existir, retorna `404`.
+- O `accountId` é resolvido a partir do claim `internalId` do access token; se o token não tiver o claim, retorna `401`. Se a conta não existir, retorna `404`. Se a conta não existir e o usuário do token tiver sido apagado do Cognito, retorna `401 UNAUTHORIZED` (o app tenta o refresh e desloga).
 
 #### Create Meal -> `/create-meal`
 
@@ -664,7 +665,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 - `text` é obrigatório: 1 a 500 caracteres após `trim`. Fica salvo na refeição (em `description`) e não aparece nas respostas de leitura.
 - `timeZone` segue a mesma regra do `create-meal` (nome, ícone e dia da refeição; fallback `America/Sao_Paulo`). A refeição entra no dia e na hora do envio; "no almoço comi…" só ajusta o nome e o ícone via `mealType`.
-- A chamada à OpenAI é **síncrona** (GPT-5.4-mini, prompt `getTextMealPrompt`, Lambda com `timeout: 29`, ~1–2s). Ela tem timeout próprio de 12s com no máximo 1 retry (o mesmo vale para o `POST /meals/{id}/items`), então uma OpenAI lenta vira erro da própria Lambda antes do corte de 29s. O prompt reaproveita as regras do "Adicionar item" (nomes genéricos entram com versão típica, quantidade implausível é limitada, nomes só em português) e acrescenta: itens com macros zero (água, café preto, refrigerante zero) sempre entram, o que o usuário diz que **não** comeu fica de fora e "café" como bebida nunca vira café da manhã. O mesmo prompt analisa a transcrição dos áudios, numa variante que só troca a introdução.
+- A chamada à OpenAI é **síncrona** (GPT-5.4-mini, prompt `getTextMealPrompt`, Lambda com `timeout: 29`, ~1–2s). Ela tem timeout próprio de 12s com no máximo 1 retry e um prazo total de 25s que inclui a espera de um `Retry-After` (o mesmo vale para o `POST /meals/{id}/items`), então uma OpenAI lenta vira erro da própria Lambda antes do corte de 29s. O prompt reaproveita as regras do "Adicionar item" (nomes genéricos entram com versão típica, quantidade implausível é limitada, nomes só em português) e acrescenta: itens com macros zero (água, café preto, refrigerante zero) sempre entram, o que o usuário diz que **não** comeu fica de fora e "café" como bebida nunca vira café da manhã. O mesmo prompt analisa a transcrição dos áudios, numa variante que só troca a introdução.
 - **Cota**: consome 1 refeição (do mês no Free, do dia no Pro), como foto e áudio, mas só quando dá certo. Ordem: checagem da cota antes da IA (`403` no Free, `429 DAILY_MEAL_LIMIT_REACHED` no Pro) → IA → `422` sem consumir → consumo atômico → gravação (estorno se a gravação falhar). Uma falha ou timeout durante a IA não deixa cota consumida.
 - A refeição nasce `SUCCESS`, com `inputFileType: "TEXT"`, itens com `source: "INITIAL"` e `unidentified: null`; o `POST /meals/{id}/items` funciona nela como em qualquer refeição.
 
@@ -1018,6 +1019,12 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 - Rotas de OAuth (`/auth/oauth/callback` e `/auth/complete-onboarding`) são públicas e validam o `accessToken` no body
 - Rotas `/billing/*` são protegidas por JWT, exceto `POST /billing/webhooks/asaas` (pública, endurecida com allowlist de IP dos IPs oficiais do Asaas, rate limit por IP 120/60s; valida o header `asaas-access-token`; `reservedConcurrency: 5`)
 - Suporte a domínio personalizado (opcional)
+- Access log em `/aws/http-api/nacal-api-<stage>` (IP, rota, status), com retenção de 30 dias
+
+### CloudWatch
+
+- Log groups de todas as Lambdas com retenção de 30 dias (`provider.logRetentionInDays`)
+- Alarmes (`sls/resources/observabilityAlarms.yml`, ligados só em prod, email via SNS): `HttpApi5xxAlarm` (3+ respostas `5xx` em 5 min), `AsaasWebhookNon2xxAlarm` (métrica EMF `WebhookNon2xx`), `MealFailedAlarm` (métrica EMF `MealFailed`) e `ProcessMealThrottlesAlarm`, além dos alarmes das filas e da reconciliação. O que fazer com cada um: [runbook de alertas](docs/guide/runbooks/alertas.md)
 
 ## Variáveis de Ambiente
 
@@ -1061,6 +1068,8 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 | `MEALS_BUCKET_NAME`     | `!Ref MealsBucket`                    |
 | `MEALS_CDN_DOMAIN_NAME` | CloudFront domain ou fallback do env  |
 | `MEALS_QUEUE_URL`       | `!Ref MealsQueue`                     |
+| `SERVICE_NAME`          | `nacal-api-<stage>` (dimensão `Service` das métricas EMF) |
+| `NODE_OPTIONS`          | `--enable-source-maps`, posto pelo Serverless em cada função quando o build gera sourcemap (não definir no `env.yml`, o valor por função sobrepõe o do provider) |
 
 ## Arquitetura do Código
 
@@ -1138,7 +1147,8 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 - Para falso positivo do gate de foto, revise `MEAL_GATE_REJECT_THRESHOLD` e os logs `meal_gate`/`meal_gate_error` no CloudWatch.
 
 ### Refeição fica com status FAILED
-- Verifique os logs da Lambda `processMeal` no CloudWatch;
+- Verifique os logs da Lambda `processMeal` no CloudWatch (filtre pelo `mealId`: as linhas `meal processing attempt failed` trazem o erro de cada tentativa; em prod, o `MealFailedAlarm` avisa por email, ver o [runbook de alertas](docs/guide/runbooks/alertas.md#mealfailedalarm));
+- O trabalho da OpenAI de cada tentativa tem prazo de 90 s (análise 45 s + 1 retry, transcrição 30 s + 1 retry, download do áudio 15 s), que vale também para a espera de um `Retry-After` da OpenAI; estourou, a tentativa falha e vai para o retry ou para `FAILED`. Resposta cortada por `max_output_tokens` (4096) também vira erro (`OPEN AI incomplete response`);
 - Confirme que a `OPENAI_API_KEY` está configurada e é válida;
 - Verifique se o formato do arquivo é suportado (imagens: JPEG; áudios: M4A, WebM);
 - Após 2 tentativas, a refeição fica `FAILED`, a cota é estornada, o arquivo é removido e a mensagem é descartada; falhas inesperadas que esgotam as 3 entregas da fila vão para a Dead Letter Queue e disparam alarme por email.

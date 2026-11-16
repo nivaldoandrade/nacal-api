@@ -129,6 +129,7 @@ Esse também é o caminho de recuperação de quem confirmou o cadastro com uma 
 | Qualquer erro em `confirmation-forgot-password` | `400 BAD_REQUEST` |
 | `GET /me` sem `Account`, com token sem `email_verified` ou `internalId` diferente | `404 RESOURCE_NOT_FOUND` |
 | `GET /me` sem `Account` e o e-mail já é de outra conta | `409 EMAIL_ALREADY_IN_USE` |
+| `GET /me` sem `Account` com o access token de um usuário apagado do Cognito | `401 UNAUTHORIZED` (o app tenta o refresh, recebe `401 INVALID_REFRESH_TOKEN` e desloga) |
 | Corpo fora do schema | `400 VALIDATION` |
 | Rate limit da API | `429 RATE_LIMIT_EXCEEDED` |
 

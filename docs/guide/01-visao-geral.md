@@ -29,7 +29,7 @@ flowchart LR
     api -- "checkout, assinatura e consulta" --> asaas
     asaas -- "webhook de pagamento" --> api
     api -- "código de cadastro e de senha" --> ses
-    api -- "SNS: DLQs, reconciliação" --> dev
+    api -- "SNS: alarmes, estornos, reconciliação" --> dev
 ```
 
 | Sistema externo | Para quê | Onde no código |
@@ -82,6 +82,7 @@ flowchart TB
 
     subgraph ops["Observabilidade"]
         dlq[["DLQs"]]
+        logs["CloudWatch Logs<br/>JSON + métricas EMF"]
         alarms["CloudWatch Alarms"]
         sns["SNS DQLAlarmTopic → e-mail"]
     end
@@ -103,6 +104,10 @@ flowchart TB
     mealsQ -. "3 falhas" .-> dlq
     checkQ -. "3 falhas" .-> dlq
     dlq --> alarms --> sns
+    compute -. "logs" .-> logs
+    apigw -. "access log" .-> logs
+    apigw -. "métrica 5xx" .-> alarms
+    logs -. "MealFailed, WebhookNon2xx" .-> alarms
     reconcile -. "alerta" .-> sns
 ```
 
@@ -111,7 +116,8 @@ Pontos que valem guardar:
 - **O arquivo nunca passa pela Lambda na subida.** A API devolve um Presigned POST e o app manda o arquivo direto para o S3. A Lambda só lê o arquivo depois, já no processamento.
 - **As fotos saem pela CDN.** O app mostra as fotos pela CloudFront, e a OpenAI também baixa a imagem pela URL da CDN. O bucket não é público (Origin Access Control).
 - **Duas tabelas.** `MainTable` guarda as entidades. `RateLimitTable` guarda contadores atômicos: rate limit por IP, conta ou e-mail, as **cotas de refeição** e a idempotência do webhook. As duas usam TTL (`expiresAt`).
-- **Toda fila tem DLQ e alarme.** Os alarmes só disparam em prod (`IsProd`) e caem no tópico SNS, que manda e-mail.
+- **Toda fila tem DLQ e alarme.** Os alarmes só disparam em prod (`IsProd`) e caem no tópico SNS, que manda e-mail. Além das filas, há alarmes de `5xx` do HTTP API, de resposta não-2xx do webhook do Asaas, de refeição `FAILED` e de throttling da `processMeal` (ver [operação](06-operacao.md#alarmes)).
+- **Logs em JSON.** Uma linha por evento, com retenção de 30 dias; as métricas `MealFailed` e `WebhookNon2xx` saem das próprias linhas (EMF), sem metric filter.
 
 ## Inventário de Lambdas
 

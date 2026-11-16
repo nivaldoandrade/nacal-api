@@ -1,5 +1,6 @@
 import { Injectable } from '@kernel/decorators/Injectable';
 import { env } from '@shared/config/env';
+import { logger } from '@shared/logger/logger';
 
 const ASAAS_WEBHOOK_PRODUCTION_IPS = [
   '52.67.12.206',
@@ -95,8 +96,7 @@ function parseGateEnabled(raw: string | undefined): boolean {
     return false;
   }
 
-  // eslint-disable-next-line no-console
-  console.warn(`Invalid MEAL_GATE_ENABLED value "${raw}", disabling meal gate.`);
+  logger.warn('invalid MEAL_GATE_ENABLED, disabling meal gate', { value: raw });
 
   return false;
 }
@@ -114,8 +114,7 @@ function parseGateThreshold(raw: string | undefined): number {
     return threshold;
   }
 
-  // eslint-disable-next-line no-console
-  console.warn(`Invalid MEAL_GATE_REJECT_THRESHOLD value "${raw}", using 0.30.`);
+  logger.warn('invalid MEAL_GATE_REJECT_THRESHOLD, using 0.30', { value: raw });
 
   return 0.3;
 }

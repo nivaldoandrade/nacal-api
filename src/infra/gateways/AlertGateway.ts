@@ -2,6 +2,7 @@ import { PublishCommand } from '@aws-sdk/client-sns';
 import { snsClient } from '@infra/clients/snsClient';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { logger } from '@shared/logger/logger';
 
 @Injectable()
 export class AlertGateway {
@@ -12,8 +13,7 @@ export class AlertGateway {
     const { topicArn } = this.config.alerts;
 
     if (!topicArn) {
-      // eslint-disable-next-line no-console
-      console.error(`[alert] ${subject}\n${message}`);
+      logger.error('alert without topic', { subject, alertMessage: message });
 
       return;
     }

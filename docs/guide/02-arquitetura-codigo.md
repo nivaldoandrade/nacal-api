@@ -29,10 +29,10 @@ flowchart TB
 
     subgraph kernel["src/kernel · infraestrutura do framework"]
         di["di/Registry<br/>container de DI"]
-        decorators["decorators<br/>@Injectable · @Schema · @RateLimit · @IpAllowlist"]
+        decorators["decorators<br/>@Injectable · @Schema · @RateLimit · @IpAllowlist · @Non2xxMetric"]
     end
 
-    shared["src/shared<br/>config · env · utils"]
+    shared["src/shared<br/>config · env · logger · utils"]
 
     fn --> adapters --> entry --> usecases
     usecases --> services
@@ -48,11 +48,11 @@ flowchart TB
 
 | Camada | Pasta | Responsabilidade | Pode depender de |
 |---|---|---|---|
-| **main** | `src/main/` | Recebe o evento da AWS, resolve a classe pelo DI e converte o resultado ou o erro em resposta | application, kernel |
+| **main** | `src/main/` | Recebe o evento da AWS, resolve a classe pelo DI, converte o resultado ou o erro em resposta e loga cada evento | application, kernel, shared |
 | **application** | `src/application/` | Controllers, use cases, services, entidades, erros e contratos | infra, kernel, shared |
 | **infra** | `src/infra/` | Repositórios do DynamoDB e gateways dos serviços externos | application (entidades, erros, contratos e alguns services), kernel, shared |
 | **kernel** | `src/kernel/` | Container de DI e decorators | nada do projeto |
-| **shared** | `src/shared/` | `AppConfig`, validação das variáveis de ambiente e utilitários | nada do projeto |
+| **shared** | `src/shared/` | `AppConfig`, validação das variáveis de ambiente, logger JSON e utilitários | nada do projeto |
 
 Os imports usam aliases: `@application/*`, `@infra/*`, `@kernel/*`, `@main/*`, `@shared/*`.
 
@@ -61,10 +61,11 @@ Os imports usam aliases: `@application/*`, `@infra/*`, `@kernel/*`, `@main/*`, `
 ```text
 src/
 ├── kernel/
-│   ├── decorators/        @Injectable, @Schema, @RateLimit, @IpAllowlist
+│   ├── decorators/        @Injectable, @Schema, @RateLimit, @IpAllowlist, @Non2xxMetric
 │   └── di/                Registry (container de DI)
 ├── shared/
 │   ├── config/            AppConfig, validação do env, beta, termos
+│   ├── logger/            logger JSON e métricas EMF
 │   └── utils/             fuso, IDs, e-mail normalizado, duração de WebM
 ├── main/
 │   ├── adapters/          HTTP, SQS, S3 e schedule
@@ -174,7 +175,7 @@ flowchart TD
     handler -- "sucesso" --> ok(["statusCode + body do controller"])
     handler -- "ApplicationError" --> rApp["statusCode e code do erro<br/>ex.: 403 FREE_QUOTA_EXCEEDED"]
     handler -- "HttpError" --> rHttp["statusCode e code do erro"]
-    handler -- "qualquer outro erro" --> r500["500 INTERNAL_SERVER_ERROR<br/>+ console.error"]
+    handler -- "qualquer outro erro" --> r500["500 INTERNAL_SERVER_ERROR<br/>erro vai na linha do log"]
 ```
 
 Todo erro sai no mesmo formato:
@@ -188,7 +189,13 @@ Todo erro sai no mesmo formato:
 }
 ```
 
+Toda request termina numa linha JSON `http request` (nível `INFO` para 2xx e 3xx, `WARN` para 4xx e `ERROR` para 5xx) com `awsRequestId`, `routeKey`, `accountId` (rotas 🔒), `statusCode`, `durationMs` e `errorCode`. Nos `500` e nos `ApplicationError` 5xx (ex.: `502 BILLING_ERROR`), a mesma linha leva o `error` serializado (nome, mensagem, stack e `cause`). Um controller com `@Non2xxMetric('<métrica>')` também emite essa métrica EMF quando a resposta não é 2xx, incluindo o `403` da allowlist e o `429` do rate limit (hoje só o webhook do Asaas, com `WebhookNon2xx`).
+
 Os códigos ficam em `src/application/errors/ErrorCode.ts`. Para um erro de negócio novo, adicione o `code` em `ErrorCode.ts` (o tipo só aceita códigos que estão lá) e crie uma classe em `src/application/errors/application/` estendendo `ApplicationError` com `statusCode` e `code`. O adapter já sabe convertê-la.
+
+### Logger
+
+`src/shared/logger/logger.ts` escreve uma linha JSON por evento direto no `stdout` (sem o prefixo do `console`, para o CloudWatch ler como JSON e extrair as métricas EMF). Use `logger.info`, `logger.warn` e `logger.error` com uma mensagem curta e fixa e os dados num objeto: `logger.error('asaas request failed', { path, error })`. Um `Error` em qualquer campo é serializado com nome, mensagem, stack e `cause`. Os adapters abrem um contexto por evento (`awsRequestId`, mais `routeKey`/`accountId` no HTTP, `messageId`/`receiveCount` no SQS e `fileKey` no S3) que entra em toda linha logada dentro dele; `logger.appendContext({ mealId })` acrescenta campos ao contexto atual. `logger.metric('MealFailed', { ... })` grava uma linha que também é uma métrica EMF (namespace `NaCal`, dimensão `Service` = `nacal-api-<stage>`). Não use `console.*` no código da API.
 
 ### Um controller completo
 

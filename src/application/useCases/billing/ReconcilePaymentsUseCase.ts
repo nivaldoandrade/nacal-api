@@ -3,6 +3,7 @@ import { WebhookUseCase } from '@application/useCases/billing/WebhookUseCase';
 import { RateLimitRepository } from '@infra/databases/dynamodb/RateLimitRepository';
 import { AlertGateway } from '@infra/gateways/AlertGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 @Injectable()
 export class ReconcilePaymentsUseCase {
@@ -47,8 +48,7 @@ export class ReconcilePaymentsUseCase {
 
     await this.reconcileReversedPayments(dueDateFrom, markerTtlDays, output);
 
-    // eslint-disable-next-line no-console
-    console.log(JSON.stringify({ message: 'billing reconciliation', ...output }));
+    logger.info('billing reconciliation', output);
 
     if (output.activated.length || output.reversed.length || output.unmatched.length || output.failed.length) {
       await this.alert('reconciliação de pagamentos encontrou divergências', [

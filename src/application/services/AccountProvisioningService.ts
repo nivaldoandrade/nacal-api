@@ -6,6 +6,7 @@ import { AccountsRepository } from '@infra/databases/dynamodb/AccountsRepository
 import { PendingSignUpRepository } from '@infra/databases/dynamodb/PendingSignUpRepository';
 import { SignUpUOW } from '@infra/databases/dynamodb/uow/SignUpUOW';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 /**
  * Makes sure a Cognito user that has already proven ownership of the email (confirmation code,
@@ -112,8 +113,7 @@ export class AccountProvisioningService {
       await this.pendingSignUpRepository.delete(accountId);
     } catch (error) {
       // The account is already provisioned; TTL cleans this up.
-      // eslint-disable-next-line no-console
-      console.error('Failed to delete pending sign-up:', error);
+      logger.error('failed to delete pending sign-up', { error });
     }
   }
 }

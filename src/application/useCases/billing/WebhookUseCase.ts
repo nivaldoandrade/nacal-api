@@ -5,6 +5,7 @@ import { RateLimitRepository } from '@infra/databases/dynamodb/RateLimitReposito
 import { AlertGateway } from '@infra/gateways/AlertGateway';
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 @Injectable()
 export class WebhookUseCase {
@@ -505,8 +506,7 @@ export class WebhookUseCase {
         ].join('\n'),
       });
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('[alert] payment reversal alert failed', error);
+      logger.error('payment reversal alert failed', { error });
     }
   }
 
@@ -565,8 +565,7 @@ export class WebhookUseCase {
         ].join('\n'),
       });
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('[alert] duplicate subscription alert failed', error);
+      logger.error('duplicate subscription alert failed', { error });
     }
   }
 

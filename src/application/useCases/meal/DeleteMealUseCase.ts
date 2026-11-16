@@ -3,6 +3,7 @@ import { ResourceNotFound } from '@application/errors/application/ResourceNotFou
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 @Injectable()
 export class DeleteMealUseCase {
@@ -42,7 +43,7 @@ export class DeleteMealUseCase {
     try {
       await this.mealFileStorageGateway.deleteObject(meal.inputFileKey);
     } catch (error) {
-      console.error(`Failed to delete input file of meal ${meal.id}:`, error);
+      logger.error('failed to delete meal input file', { mealId: meal.id, error });
     }
   }
 }

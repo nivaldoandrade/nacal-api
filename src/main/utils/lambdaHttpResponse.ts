@@ -1,10 +1,10 @@
-import { APIGatewayProxyResultV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
+import { APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 
 export function lambdaHttpResponse(
   statusCode: number,
   body?: Record<string, unknown>,
   headers?: APIGatewayProxyStructuredResultV2['headers'],
-): APIGatewayProxyResultV2 {
+): APIGatewayProxyStructuredResultV2 {
 
   return {
     statusCode,

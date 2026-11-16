@@ -1,4 +1,5 @@
 import { env } from '@shared/config/env';
+import { logger } from '@shared/logger/logger';
 
 function isBetaGateEnabled(raw: string | undefined): boolean {
   if (raw === undefined) {
@@ -16,8 +17,7 @@ function isBetaGateEnabled(raw: string | undefined): boolean {
   }
 
   // Fail closed: an unrecognized value must not silently open the closed beta.
-  // eslint-disable-next-line no-console
-  console.warn(`Invalid BETA_GATE_ENABLED value "${raw}", keeping the beta gate enabled.`);
+  logger.warn('invalid BETA_GATE_ENABLED, keeping the beta gate enabled', { value: raw });
 
   return true;
 }

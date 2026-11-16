@@ -7,6 +7,7 @@ import { s3Client } from '@infra/clients/s3Client';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
 import { randomUUID } from 'node:crypto';
+import { logger } from '@shared/logger/logger';
 
 const EXPIRES_PRESIGNED_POST = 5 * 60; //5MIN
 
@@ -66,8 +67,7 @@ export class MealFileStorageGateway {
     try {
       await this.deleteObject(inputFileKey);
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to delete meal input file:', error);
+      logger.error('failed to delete meal input file', { inputFileKey, error });
     }
   }
 

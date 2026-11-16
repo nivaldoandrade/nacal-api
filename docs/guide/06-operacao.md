@@ -52,6 +52,10 @@ Todos publicam no tópico SNS `DQLAlarmTopic` (o nome é esse mesmo, com `DQL`, 
 | `MealsQueueAgeAlarm` | Mensagem mais antiga da `MealsQueue` passa de 2 min, por 2 min seguidos | O processamento está atrasado ou parado | Ver erros e throttling da `processMeal` e a disponibilidade da OpenAI |
 | `MealUploadCheckDLQAlarm` | Alguma mensagem na `MealUploadCheckDLQ` | A checagem de 15 min falhou 3 vezes | Ver os logs da `checkMealUpload` e conferir a refeição e a cota na mão |
 | `ReconcilePaymentsErrorsAlarm` | Erro na Lambda `reconcilePayments` | A reconciliação não rodou | Ver os logs. Ela roda de novo na hora seguinte. |
+| `HttpApi5xxAlarm` | 3 ou mais respostas `5xx` do HTTP API em 5 min | Erro não tratado, `502` do Asaas ou do Cognito, Lambda com timeout | Ver [runbook de alertas](runbooks/alertas.md#httpapi5xxalarm) |
+| `AsaasWebhookNon2xxAlarm` | 1 ou mais respostas não-2xx dadas pelo código do webhook do Asaas em 5 min (métrica `WebhookNon2xx`) | IP fora da allowlist, token errado, conflito de escrita ou erro. Throttle (`reservedConcurrency: 5`), timeout ou erro de init não passam pelo código: só aparecem no `HttpApi5xxAlarm` | Ver [runbook de alertas](runbooks/alertas.md#asaaswebhooknon2xxalarm). O Asaas pausa a fila do webhook depois de 15 falhas seguidas |
+| `MealFailedAlarm` | 1 ou mais refeições `FAILED` em 15 min (métrica `MealFailed`) | Uma refeição foi perdida (a cota já foi estornada) | Ver [runbook de alertas](runbooks/alertas.md#mealfailedalarm) |
+| `ProcessMealThrottlesAlarm` | 1 ou mais throttles da `processMeal` em 5 min | A conta bateu o limite de concorrência das Lambdas | Ver [runbook de alertas](runbooks/alertas.md#processmealthrottlesalarm) |
 | E-mail "reconciliação encontrou divergências" | Pagamento ativado ou estorno aplicado pela reconciliação, sem conta ou com erro | O webhook falhou ou um pagamento não tem dono | Ver [runbook de alertas](runbooks/alertas.md#reconciliação-encontrou-divergências) |
 | E-mail "estorno ... · Pro descontado/sem mudança" | Evento de estorno ou chargeback no webhook do Asaas | O Pro foi descontado ou não, conforme o caso | Ver [runbook de alertas](runbooks/alertas.md#estorno-e-chargeback) |
 | E-mail "pagamento de outra assinatura com o Pro ativo" | Pagamento que não é da assinatura guardada | Pode haver duas cobranças ativas | Ver [runbook de alertas](runbooks/alertas.md#pagamento-de-outra-assinatura-com-o-pro-ativo) |
@@ -66,16 +70,35 @@ sls logs -f processMeal --tail                   # dev
 AWS_PROFILE=nacal-prod sls logs -f processMeal --stage prod --startTime 1h
 ```
 
-Marcadores úteis para buscar no CloudWatch Logs Insights:
+- **Formato**: uma linha JSON por evento, com `timestamp`, `level` (`INFO`, `WARN`, `ERROR`), `message` e os campos do contexto (`awsRequestId`, `routeKey`, `accountId`, `messageId`, `mealId`). Detalhes em [arquitetura](02-arquitetura-codigo.md#logger). As linhas de início e fim da Lambda (`START`, `END`, `REPORT`) continuam em texto.
+- **Retenção**: 30 dias em todos os log groups (`provider.logRetentionInDays`).
+- **Access log do HTTP API**: `/aws/http-api/nacal-api-<stage>`, uma linha por request com IP, rota e status. Mostra também o que não chega na Lambda (`401` do authorizer, rota inexistente).
+- **Sourcemaps**: o build gera `.js.map` (sem o código-fonte embutido) e o Serverless põe `NODE_OPTIONS=--enable-source-maps` em cada função, então a stack de um erro aponta para o arquivo e a linha do `src/`. O `keepNames` do esbuild mantém o nome das classes de erro (`error.name` sai `BillingError`, não o nome minificado).
 
-| Busca | Onde aparece | Mostra |
+Marcadores úteis para buscar no CloudWatch Logs Insights (campo `message`):
+
+| `message` | Onde aparece | Mostra |
 |---|---|---|
-| `"meal_gate"` | `processMeal` | JSON com decisão, score, latência e tokens do gate |
-| `"meal_gate_error"` | `processMeal` | Falha ou timeout do gate (a foto seguiu sem ele) |
-| `[UNIDENTIFIED]` | `processMeal`, `createTextMeal`, `addMealItems` | Alimentos removidos por não estarem identificados |
-| `[OPEN AI]` | Lambdas de refeição | Erro na chamada à OpenAI |
+| `http request` | Lambdas HTTP | Uma linha por request: `routeKey`, `statusCode`, `durationMs`, `errorCode` e, nos `5xx`, o `error` |
+| `sqs message failed` | `processMeal`, `checkMealUpload` | Mensagem que voltou para a fila, com `messageId`, `receiveCount` e o `error` |
+| `meal processing started`, `meal processed`, `meal rejected`, `meal processing attempt failed` | `processMeal` | Transições de uma refeição, com `mealId`, `attempt` e `durationMs` |
+| `metric MealFailed` | `processMeal`, `checkMealUpload` | Refeição que virou `FAILED`, com o `source` |
+| `metric WebhookNon2xx` | `webhookAsaas` | Resposta não-2xx do webhook, com `statusCode` e `errorCode` |
+| `openai response` | Lambdas de refeição | `usage` de cada chamada à OpenAI (`inputTokens`, `cachedTokens`, `outputTokens`, `reasoningTokens`), `operation`, `responseStatus` e `durationMs` |
+| `openai transcription` | `processMeal` | Transcrição do áudio, com `usage` e `durationMs` |
+| `meal_gate` | `processMeal` | Decisão, score, latência e tokens do gate |
+| `meal_gate_error` | `processMeal` | Falha ou timeout do gate (a foto seguiu sem ele) |
+| `unidentified foods removed` | `processMeal`, `createTextMeal`, `addMealItems` | Alimentos removidos por não estarem identificados |
 | `billing reconciliation` | `reconcilePayments` | Resumo de cada execução |
-| `refund meal quota` | `createMeal`, `createTextMeal` | Estorno de cota que falhou na criação (conferir o contador na mão) |
+| `failed to refund meal quota` | `createMeal` | Estorno de cota que falhou na criação (conferir o contador na mão). No `createTextMeal`, a mesma falha sai no `error` da linha `http request` do `500` (`AggregateError` com "refund meal quota") |
+
+Exemplo no Logs Insights (tokens por operação na última semana):
+
+```text
+fields operation, usage.inputTokens, usage.cachedTokens, usage.outputTokens, usage.reasoningTokens
+| filter message = "openai response"
+| stats count() as calls, avg(usage.inputTokens) as input, avg(usage.outputTokens) as output, max(usage.outputTokens) as maxOutput by operation
+```
 
 ## Runbooks e scripts
 
@@ -95,6 +118,7 @@ Marcadores úteis para buscar no CloudWatch Logs Insights:
 | OpenAI | É o maior custo variável. Cotas e rate limit existem para limitar esse gasto. |
 | Cloudflare Workers AI | Gate de foto. Barato, mas cobrado por chamada. |
 | GuardDuty | Grátis até 2026-12-12 em prod, depois cobrado. |
-| CloudWatch Logs | O `serverless.yml` não define `logRetentionInDays`, então os logs das Lambdas nunca expiram. |
+| CloudWatch Logs | Ingestão por GB. Retenção de 30 dias (`logRetentionInDays`); as linhas por request e o access log crescem com o tráfego. |
+| CloudWatch (alarmes e métricas) | 8 alarmes e 2 métricas EMF (`MealFailed`, `WebhookNon2xx`) custam centavos por mês. |
 
 A estimativa de custos detalhada é um documento interno, fora deste repo.

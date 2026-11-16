@@ -13,6 +13,9 @@ provider:
   architecture: arm64
   memorySize: 128
   region: sa-east-1
+  logRetentionInDays: 30
+  logs:
+    httpApi: true
   environment: ${file(./sls/config/env.yml)}
   iam:
     role: ${file(./sls/config/role.yml)}
@@ -53,6 +56,7 @@ resources:
   - ${file(./sls/resources/mealUploadCheckQueue.yml)}
   - ${file(./sls/resources/DLQAlarmTopic.yml)}
   - ${file(./sls/resources/reconcilePaymentsAlarm.yml)}
+  - ${file(./sls/resources/observabilityAlarms.yml)}
   - ${file(./sls/resources/rateLimitTable.yml)}
 
 functions:

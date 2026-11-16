@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import OpenAI, { toFile } from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
 import { z } from 'zod';
@@ -12,6 +11,7 @@ import { getTextMealPrompt } from '@infra/ai/prompts/getTextMealPrompt';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { downloadByURL } from '@infra/utils/downloadByURL';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 const foodSchema = z.object({
   name: z.string(),
@@ -39,10 +39,23 @@ const addItemsSchema = z.object({
   foods: z.array(taggedFoodSchema),
 });
 
-const SYNC_REQUEST_OPTIONS: OpenAI.RequestOptions = {
-  timeout: 12_000,
-  maxRetries: 1,
-};
+const MODEL = 'gpt-5.4-mini';
+
+const TRANSCRIPTION_MODEL = 'gpt-4o-transcribe';
+
+const MAX_OUTPUT_TOKENS = 4096;
+
+const SYNC_TIMEOUT_MS = 12_000;
+
+const SYNC_DEADLINE_MS = 25_000;
+
+const ASYNC_DEADLINE_MS = 90_000;
+
+const ASYNC_ANALYSIS_TIMEOUT_MS = 45_000;
+
+const ASYNC_TRANSCRIPTION_TIMEOUT_MS = 30_000;
+
+const ASYNC_DOWNLOAD_TIMEOUT_MS = 15_000;
 
 const textMealSchema = z.object({
   mealType: mealTypeSchema,
@@ -58,11 +71,12 @@ export class MealAiGateway {
   ) { }
 
   async processMeal(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
+    const signal = AbortSignal.timeout(ASYNC_DEADLINE_MS);
 
     try {
       const processedMeal = meal.inputType === Meal.InputType.PICTURE
-        ? await this.processMealByImage(meal)
-        : await this.processMealByAudio(meal);
+        ? await this.processMealByImage(meal, signal)
+        : await this.processMealByAudio(meal, signal);
 
       return processedMeal;
     } catch (error) {
@@ -75,7 +89,7 @@ export class MealAiGateway {
 
   }
 
-  private async processMealByImage(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
+  private async processMealByImage(meal: Meal, signal: AbortSignal): Promise<MealAiGateway.ProcessMeal['result']> {
     const userContent: OpenAI.Responses.ResponseInputMessageContentList = [
       {
         type: 'input_image',
@@ -102,7 +116,17 @@ export class MealAiGateway {
       },
     ];
 
-    const { unidentified, mealType, foods: taggedFoods } = await this.callOpenAI(meal.id, input, imageSchema);
+    const { unidentified, mealType, foods: taggedFoods } = await this.callOpenAI({
+      mealId: meal.id,
+      operation: 'PICTURE',
+      input,
+      outputSchema: imageSchema,
+      requestOptions: {
+        timeout: ASYNC_ANALYSIS_TIMEOUT_MS,
+        maxRetries: 1,
+        signal,
+      },
+    });
     const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods({
       mealId: meal.id,
       label: 'foods',
@@ -145,7 +169,13 @@ export class MealAiGateway {
     ];
 
     try {
-      const result = await this.callOpenAI(mealId, input, addItemsSchema, SYNC_REQUEST_OPTIONS);
+      const result = await this.callOpenAI({
+        mealId,
+        operation: 'ADD_ITEMS',
+        input,
+        outputSchema: addItemsSchema,
+        requestOptions: MealAiGateway.syncRequestOptions(),
+      });
       const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods({
         mealId,
         label: 'added foods',
@@ -170,7 +200,7 @@ export class MealAiGateway {
         mealId,
         note: text,
         source: 'TEXT',
-        requestOptions: SYNC_REQUEST_OPTIONS,
+        requestOptions: MealAiGateway.syncRequestOptions(),
       });
 
       return {
@@ -183,13 +213,18 @@ export class MealAiGateway {
     }
   }
 
-  private async processMealByAudio(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
-    const audioTranscript = await this.transcribe(meal);
+  private async processMealByAudio(meal: Meal, signal: AbortSignal): Promise<MealAiGateway.ProcessMeal['result']> {
+    const audioTranscript = await this.transcribe(meal, signal);
 
     const { mealType, foods } = await this.extractMealFromNote({
       mealId: meal.id,
       note: audioTranscript,
       source: 'AUDIO',
+      requestOptions: {
+        timeout: ASYNC_ANALYSIS_TIMEOUT_MS,
+        maxRetries: 1,
+        signal,
+      },
     });
 
     return {
@@ -221,7 +256,13 @@ export class MealAiGateway {
       },
     ];
 
-    const { mealType, foods: taggedFoods } = await this.callOpenAI(mealId, input, textMealSchema, requestOptions);
+    const { mealType, foods: taggedFoods } = await this.callOpenAI({
+      mealId,
+      operation: source,
+      input,
+      outputSchema: textMealSchema,
+      requestOptions,
+    });
     const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods({
       mealId,
       label: `${source.toLowerCase()} foods`,
@@ -231,25 +272,44 @@ export class MealAiGateway {
     return { mealType, foods, unidentifiedFoods };
   }
 
-  private async transcribe(meal: Meal): Promise<string> {
+  private async transcribe(meal: Meal, signal: AbortSignal): Promise<string> {
     const inputFileKey = meal.requireInputFileKey();
     const audioUrl = this.mealFileStorageGateway.getFileURL(inputFileKey);
-    const audioBuffer = await downloadByURL(audioUrl);
+    const audioBuffer = await downloadByURL(audioUrl, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(ASYNC_DOWNLOAD_TIMEOUT_MS)]),
+    });
     const inputFile = Meal.getInputFileByKey(inputFileKey);
+    const startedAt = Date.now();
 
-    const transcription = await this.client.audio.transcriptions.create({
-      model: 'gpt-4o-transcribe',
-      file: await toFile(
-        audioBuffer,
-        `audio.${inputFile.extension}`,
-        { type: inputFile.mimeType },
-      ),
+    const transcription = await MealAiGateway.withDeadline(
+      this.client.audio.transcriptions.create({
+        model: TRANSCRIPTION_MODEL,
+        file: await toFile(
+          audioBuffer,
+          `audio.${inputFile.extension}`,
+          { type: inputFile.mimeType },
+        ),
+      }, {
+        timeout: ASYNC_TRANSCRIPTION_TIMEOUT_MS,
+        maxRetries: 1,
+        signal,
+      }),
+      signal,
+    );
+
+    const { text, usage } = transcription;
+
+    logger.info('openai transcription', {
+      mealId: meal.id,
+      model: TRANSCRIPTION_MODEL,
+      durationMs: Date.now() - startedAt,
+      audioBytes: audioBuffer.byteLength,
+      transcriptChars: text.length,
+      usage,
     });
 
-    const { text } = transcription;
-
     if (!text.trim()) {
-      console.error(`OPEN AI transcription response: ${JSON.stringify(transcription, null, 2)}`);
+      logger.warn('openai empty transcription', { mealId: meal.id });
       throw new MealRejectedError(Meal.RejectionReason.NO_FOOD_DETECTED);
     }
 
@@ -274,10 +334,38 @@ export class MealAiGateway {
     }
 
     if (unidentifiedFoods.length > 0) {
-      console.log(`[UNIDENTIFIED] meal ${mealId}: removed ${label} ${JSON.stringify(unidentifiedFoods)}`);
+      logger.info('unidentified foods removed', { mealId, label, unidentifiedFoods });
     }
 
     return { foods, unidentifiedFoods };
+  }
+
+  private static syncRequestOptions(): OpenAI.RequestOptions {
+    return {
+      timeout: SYNC_TIMEOUT_MS,
+      maxRetries: 1,
+      signal: AbortSignal.timeout(SYNC_DEADLINE_MS),
+    };
+  }
+
+  private static withDeadline<T>(promise: Promise<T>, signal?: AbortSignal | null): Promise<T> {
+    if (!signal) {
+      return promise;
+    }
+
+    promise.catch(() => undefined);
+
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }),
+    ]);
   }
 
   private static sanitize(value: string): string {
@@ -286,25 +374,54 @@ export class MealAiGateway {
       .replace(/>/g, '›');
   }
 
-  private async callOpenAI<TSchema extends z.ZodType>(
-    mealId: string,
-    input: OpenAI.Responses.ResponseInput,
-    outputSchema: TSchema,
-    requestOptions?: OpenAI.RequestOptions,
-  ): Promise<z.infer<TSchema>> {
-    const response = await this.client.responses.create({
-      model: 'gpt-5.4-mini',
-      input,
-      text: {
-        format: zodTextFormat(outputSchema, 'meal'),
-      },
-    }, requestOptions);
+  private async callOpenAI<TSchema extends z.ZodType>({
+    mealId,
+    operation,
+    input,
+    outputSchema,
+    requestOptions,
+  }: MealAiGateway.CallOpenAIParams<TSchema>): Promise<z.infer<TSchema>> {
+    const startedAt = Date.now();
 
-    const { output_text } = response;
-    const openAiResponseStringify = JSON.stringify(response, null, 2);
+    const response = await MealAiGateway.withDeadline(
+      this.client.responses.create({
+        model: MODEL,
+        input,
+        store: false,
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+        text: {
+          format: zodTextFormat(outputSchema, 'meal'),
+        },
+      }, requestOptions),
+      requestOptions.signal,
+    );
+
+    const { output_text, status, incomplete_details, usage } = response;
+
+    logger.info('openai response', {
+      mealId,
+      operation,
+      model: MODEL,
+      responseStatus: status,
+      incompleteReason: incomplete_details?.reason,
+      durationMs: Date.now() - startedAt,
+      usage: usage && {
+        inputTokens: usage.input_tokens,
+        cachedTokens: usage.input_tokens_details?.cached_tokens,
+        outputTokens: usage.output_tokens,
+        reasoningTokens: usage.output_tokens_details?.reasoning_tokens,
+        totalTokens: usage.total_tokens,
+      },
+    });
+
+    if (status === 'incomplete') {
+      throw new Error(
+        `OPEN AI incomplete response (${incomplete_details?.reason ?? 'unknown'}) in meal: ${mealId}`,
+      );
+    }
 
     if (!output_text) {
-      console.error(`OPEN AI response: ${openAiResponseStringify}`);
+      logger.error('openai empty output', { mealId, operation, response });
       throw new Error(`OPEN AI error in meal: ${mealId}`);
     }
 
@@ -326,8 +443,12 @@ export class MealAiGateway {
     } = outputSchema.safeParse(parsedOutput);
 
     if (!success) {
-      console.log(`Zod error: ${JSON.stringify(error.issues, null, 2)}`);
-      console.error(`OPEN AI response: ${openAiResponseStringify}`);
+      logger.error('openai output does not match schema', {
+        mealId,
+        operation,
+        issues: error.issues,
+        outputText: output_text,
+      });
       throw new Error(`OPEN AI error in meal: ${mealId}`);
     }
 
@@ -337,6 +458,16 @@ export class MealAiGateway {
 }
 
 export namespace MealAiGateway {
+  export type Operation = 'PICTURE' | 'AUDIO' | 'TEXT' | 'ADD_ITEMS';
+
+  export type CallOpenAIParams<TSchema extends z.ZodType> = {
+    mealId: string;
+    operation: Operation;
+    input: OpenAI.Responses.ResponseInput;
+    outputSchema: TSchema;
+    requestOptions: OpenAI.RequestOptions;
+  }
+
   export type Food = z.infer<typeof foodSchema>;
 
   export type MealType = z.infer<typeof mealTypeSchema>;
@@ -359,7 +490,7 @@ export namespace MealAiGateway {
       mealId: string;
       note: string;
       source: getTextMealPrompt.Params['source'];
-      requestOptions?: OpenAI.RequestOptions;
+      requestOptions: OpenAI.RequestOptions;
     };
     result: {
       mealType: MealType;

@@ -3,6 +3,7 @@ import { Subscription } from '@application/entities/Subscription';
 import { BillingError } from '@application/errors/application/BillingError';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
+import { logger } from '@shared/logger/logger';
 import { isFetchFailure } from '@shared/utils/isFetchFailure';
 import { DEFAULT_TIME_ZONE } from '@shared/utils/timeZone';
 
@@ -240,8 +241,7 @@ export class AsaasPaymentGateway extends IPaymentGateway {
       return await this.send<T>(path, init);
     } catch (error) {
       if (isFetchFailure(error)) {
-        // eslint-disable-next-line no-console
-        console.error(`Asaas request failed: ${init?.method ?? 'GET'} ${path}`, error);
+        logger.error('asaas request failed', { method: init?.method ?? 'GET', path, error });
         throw new BillingError('Asaas request timed out or failed.');
       }
 

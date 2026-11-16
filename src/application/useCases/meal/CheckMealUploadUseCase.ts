@@ -2,6 +2,7 @@ import { Meal } from '@application/entities/Meal';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 @Injectable()
 export class CheckMealUploadUseCase {
@@ -25,6 +26,12 @@ export class CheckMealUploadUseCase {
     const failure = await this.mealRepository.failAndRefund({ meal });
 
     if (failure.failed) {
+      logger.metric('MealFailed', {
+        source: 'uploadStalled',
+        accountId,
+        mealId,
+        status: meal.status,
+      });
       await this.mealStorageGateway.deleteInputFile(meal.inputFileKey);
     }
   }

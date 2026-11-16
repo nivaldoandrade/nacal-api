@@ -7,7 +7,7 @@ Escopo: o que significa cada e-mail de alerta da API e o que fazer com ele. Todo
 | `NaCal: estorno total · Pro descontado`, `NaCal: estorno parcial · Pro sem mudança`, `NaCal: chargeback aberto · ...` etc. | Webhook do Asaas | [Estorno e chargeback](#estorno-e-chargeback) |
 | `NaCal: pagamento de outra assinatura com o Pro ativo` | Webhook do Asaas | [Pagamento de outra assinatura com o Pro ativo](#pagamento-de-outra-assinatura-com-o-pro-ativo) |
 | `NaCal: reconciliação de pagamentos encontrou divergências` | Reconciliação horária | [Reconciliação encontrou divergências](#reconciliação-encontrou-divergências) |
-| `ALARM: "nacal-api-prod-..."` | CloudWatch | [Alarmes do CloudWatch](#alarmes-do-cloudwatch) |
+| `ALARM: "nacal-api-prod-..."` (8 alarmes, entre eles 5xx do HTTP API, webhook do Asaas não-2xx e refeição `FAILED`) | CloudWatch | [Alarmes do CloudWatch](#alarmes-do-cloudwatch) |
 | Findings do GuardDuty | GuardDuty (configurado à mão em prod) | [GuardDuty](#guardduty) |
 
 ## Antes de agir
@@ -145,10 +145,14 @@ Só ligados em prod. O assunto é `ALARM: "nacal-api-prod-<alarme>" in South Ame
 
 | Alarme | Significa | O que fazer |
 |---|---|---|
-| `MealsDLQAlarm` | Uma refeição esgotou as 3 entregas sem conseguir nem marcar `FAILED` | Ver os logs da `processMeal` pelo `mealId` da mensagem (`SQS message <id> failed:`). A refeição pode ter ficado presa sem estorno de cota |
+| `MealsDLQAlarm` | Uma refeição esgotou as 3 entregas sem conseguir nem marcar `FAILED` | Ver os logs da `processMeal` pelo `mealId` da mensagem (linhas `sqs message failed`, com o `messageId`). A refeição pode ter ficado presa sem estorno de cota |
 | `MealsQueueAgeAlarm` | A mensagem mais antiga da fila de refeições passou de 2 min | Ver erros e throttling da `processMeal` e se a OpenAI está fora |
 | `MealUploadCheckDLQAlarm` | A checagem de 15 min de uma refeição falhou 3 vezes | Ver os logs da `checkMealUpload` e conferir a refeição e a cota à mão |
 | `ReconcilePaymentsErrorsAlarm` | A Lambda da reconciliação deu erro | Ver os logs da `reconcilePayments`. Ela roda de novo na hora seguinte |
+| `HttpApi5xxAlarm` | 3 ou mais respostas `5xx` do HTTP API em 5 min | Ver [abaixo](#httpapi5xxalarm) |
+| `AsaasWebhookNon2xxAlarm` | O webhook do Asaas respondeu algo diferente de 2xx | Ver [abaixo](#asaaswebhooknon2xxalarm) |
+| `MealFailedAlarm` | Uma ou mais refeições viraram `FAILED` em 15 min | Ver [abaixo](#mealfailedalarm) |
+| `ProcessMealThrottlesAlarm` | A `processMeal` foi recusada por limite de concorrência | Ver [abaixo](#processmealthrottlesalarm) |
 
 Para ver os logs:
 
@@ -157,6 +161,94 @@ AWS_PROFILE=nacal-prod sls logs -f processMeal --stage prod --startTime 1h
 ```
 
 Quando o problema estiver resolvido, as mensagens que sobraram na DLQ podem ser reprocessadas pelo console do SQS (`Start DLQ redrive`) ou apagadas.
+
+Os logs são JSON (ver [operação](../06-operacao.md#logs)). As consultas abaixo rodam no CloudWatch Logs Insights, no log group indicado, em `sa-east-1`. Pelo terminal:
+
+```bash
+QUERY_ID=$(aws logs start-query --log-group-name /aws/lambda/nacal-api-prod-<função> \
+  --start-time $(( $(date +%s) - 3600 )) --end-time $(date +%s) \
+  --query-string '<consulta>' --query queryId --output text)
+sleep 5; aws logs get-query-results --query-id "$QUERY_ID"
+```
+
+### HttpApi5xxAlarm
+
+Soma de respostas `5xx` do HTTP API (métrica `5xx` do API Gateway) chegou a 3 em 5 min. Entram os `500` de erro não tratado, os `502 BILLING_ERROR` (Asaas fora ou lento) e `CODE_DELIVERY_FAILED`, o `500` do webhook depois de 3 conflitos de escrita na assinatura, o `500` do `refresh-token` com erro do Cognito que não é recusa nem throttling, e o `503`/`504` de uma Lambda que estourou o timeout.
+
+O que fazer: achar a rota e o erro. Como o alarme é do API Gateway, comece pelo access log (`/aws/http-api/nacal-api-prod`), que mostra a rota mesmo quando a Lambda não respondeu:
+
+```text
+fields @timestamp, routeKey, status
+| filter status like /^5/
+| stats count() by routeKey, status
+```
+
+Depois, no log group da função da rota, a linha `http request` traz o `error` com a stack:
+
+```text
+fields @timestamp, statusCode, errorCode, error.name, error.message, accountId
+| filter message = "http request" and statusCode >= 500
+| sort @timestamp desc
+```
+
+Exemplo: `ALARM: "nacal-api-prod-HttpApi5xxAlarm"` com 4 `502` em `POST /billing/checkout`, todos `BILLING_ERROR` com `error.message` "Asaas request timed out or failed.": o Asaas estava fora. Conferir a página de status do Asaas e esperar; o usuário pode tentar de novo.
+
+### AsaasWebhookNon2xxAlarm
+
+O código do webhook do Asaas respondeu algo diferente de 2xx ao menos uma vez em 5 min (métrica EMF `WebhookNon2xx`, emitida pelo adapter HTTP). Falhas em que o código nem roda (throttle pelo `reservedConcurrency: 5`, timeout de 15 s, erro de init) não emitem a métrica; elas viram `5xx` do API Gateway e só entram no `HttpApi5xxAlarm` (a partir de 3 em 5 min). Um `403` de alguém sondando a URL também dispara este alarme. O Asaas reenvia o evento, mas **pausa a fila do webhook depois de 15 falhas seguidas**, e aí nada mais chega (a reconciliação horária cobre pagamentos e estornos, mas não o resto).
+
+| `statusCode` / `errorCode` | Causa provável | O que fazer |
+|---|---|---|
+| `403 FORBIDDEN` | IP fora da `ASAAS_WEBHOOK_ALLOWED_IPS` | Se o IP for de um envio real do Asaas (conferir no histórico de envios do painel), o Asaas mudou os IPs: atualizar a allowlist no `.env.prod` e fazer deploy. Se não, é alguém sondando a URL: nada a fazer |
+| `502 BILLING_ERROR` | `error.message` "Invalid webhook token.": token do header diferente do `ASAAS_WEBHOOK_TOKEN`. Outra mensagem: o Asaas falhou numa consulta feita durante o evento | Conferir o token configurado no webhook do painel contra o `.env.prod`. Falha do Asaas se resolve no reenvio |
+| `500 INTERNAL_SERVER_ERROR` | 3 conflitos de escrita na assinatura ou erro não tratado | Ver o `error` na linha `http request`. Conflito se resolve no reenvio do Asaas |
+| `429 RATE_LIMIT_EXCEEDED` | Mais de 120 chamadas por minuto do mesmo IP | Rajada de reenvios; normalmente se resolve sozinho |
+
+Consulta no log group `/aws/lambda/nacal-api-prod-webhookAsaas`:
+
+```text
+fields @timestamp, statusCode, errorCode, error.message
+| filter message = "http request" and (statusCode < 200 or statusCode >= 300)
+| sort @timestamp desc
+```
+
+Depois de corrigir, conferir no painel do Asaas (Integrações → Webhooks) se a fila está ativa e reativar se estiver pausada; os eventos pendentes são reenviados.
+
+Exemplo: `ALARM: "nacal-api-prod-AsaasWebhookNon2xxAlarm"`, e a consulta mostra três `403 FORBIDDEN` de um IP que aparece no histórico de envios do Asaas: o Asaas passou a usar um IP novo. Atualizar `ASAAS_WEBHOOK_ALLOWED_IPS` e fazer deploy.
+
+### MealFailedAlarm
+
+Uma ou mais refeições viraram `FAILED` em 15 min (métrica EMF `MealFailed`). Cada uma já teve a cota estornada e o arquivo apagado, e o app mostrou o erro ao usuário. O alarme existe para o estorno não esconder um problema sistêmico. O campo `source` diz o caminho:
+
+| `source` | Significa |
+|---|---|
+| `attemptsExhausted` | As 2 tentativas deram erro (OpenAI fora, resposta cortada, timeout) |
+| `leaseExpired` | A Lambda morreu na 2ª tentativa e a 3ª entrega só marcou `FAILED` |
+| `uploadStalled` | Upload que nunca chegou ou refeição que ninguém pegou em 15 min (checagem do `checkMealUpload`) |
+
+Consulta no log group `/aws/lambda/nacal-api-prod-processMeal` (e no da `checkMealUpload`, para `uploadStalled`):
+
+```text
+fields @timestamp, mealId, accountId, source
+| filter message = "metric MealFailed"
+| sort @timestamp desc
+```
+
+Para ver o erro de cada tentativa de uma refeição:
+
+```text
+fields @timestamp, message, attempt, error.message, error.cause.message
+| filter mealId = "<mealId>"
+| sort @timestamp asc
+```
+
+Exemplo: 3 `MealFailed` com `source: attemptsExhausted` e `error.message` "[OPEN AI] ... Request timed out." em todas: a OpenAI estava lenta ou fora. Conferir a página de status da OpenAI. Uma falha isolada com `uploadStalled` costuma ser o app fechado no meio do upload e não precisa de ação. A métrica conta eventos: a mesma refeição pode aparecer duas vezes se a mensagem for reentregue.
+
+### ProcessMealThrottlesAlarm
+
+A Lambda `processMeal` foi recusada por falta de concorrência (métrica `Throttles`). As mensagens ficam na fila e são reentregues, então nada se perde de imediato, mas a refeição atrasa e o `MealsQueueAgeAlarm` deve vir junto.
+
+O que fazer: ver a concorrência da conta (`aws lambda get-account-settings`, a cota de prod é 1000) e se alguma função está consumindo tudo (métrica `ConcurrentExecutions` por função no CloudWatch). Se for rajada de refeições, considerar `maximumConcurrency` no evento SQS da `processMeal` (P17).
 
 ## GuardDuty
 

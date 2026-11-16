@@ -18,7 +18,7 @@ O app decide o que mostrar pelo `code`, nunca pelo `message`, que é em inglês 
 | 400 | `BAD_REQUEST` | JSON malformado, plano ou `returnUrl` inválido, cancelamento sem assinatura, **qualquer** falha em `confirmation-forgot-password` | Várias |
 | 400 | `INVALID_CONFIRMATION_CODE` | Código errado, expirado ou usuário inexistente | `confirm-sign-up` |
 | 400 | `INVALID_GRANT` | Troca do `code` OAuth recusada pelo Cognito, ou token inválido ou incompleto | `oauth/callback`, `complete-onboarding`, `GET /me` |
-| 401 | `UNAUTHORIZED` | Token válido sem o claim `internalId` | Rotas 🔒 |
+| 401 | `UNAUTHORIZED` | Token válido sem o claim `internalId`, ou access token de um usuário que não existe mais no Cognito | Rotas 🔒; o segundo caso em `GET /me`, `complete-onboarding` e `oauth/callback` |
 | 401 | `INVALID_CREDENTIALS` | Senha errada ou usuário inexistente | `sign-in` |
 | 401 | `INVALID_REFRESH_TOKEN` | Refresh token inválido, expirado, já usado fora da tolerância de 60 s ou de usuário apagado | `refresh-token` |
 | 403 | `FORBIDDEN` | IP fora da allowlist | `webhooks/asaas` |
