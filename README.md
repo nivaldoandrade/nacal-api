@@ -254,7 +254,7 @@ Para produção, use `AWS_PROFILE=nacal-prod yarn deploy:prod`: o script valida 
 
 #### Convidar para o beta
 
-A lista de espera da landing guarda só o e-mail, então o convite vai por e-mail (template `betaInviteEmail`, enviado pelo SES do `COGNITO_EMAIL` com Reply-To em `COGNITO_EMAIL_TO_REPLY`). Para cada onda:
+A lista de espera da landing guarda só o e-mail, então o convite vai por e-mail (template `betaInviteEmail`, enviado pelo SES a partir do `COGNITO_EMAIL_TO_REPLY`, um endereço que recebe respostas, em vez do `noreply`, para não cair no spam). Para cada onda:
 
 1. Adicione os e-mails em `BETA_ALLOWED_EMAILS` no `.env.prod` e rode `AWS_PROFILE=nacal-prod yarn deploy:prod`.
 2. Dry-run (gera o preview e confere se todos já estão liberados na Lambda publicada):

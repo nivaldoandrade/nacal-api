@@ -50,8 +50,7 @@ function requireEnv(name: string) {
   return value;
 }
 
-const from = requireEnv('COGNITO_EMAIL');
-const replyTo = requireEnv('COGNITO_EMAIL_TO_REPLY');
+const from = requireEnv('COGNITO_EMAIL_TO_REPLY');
 const sourceArn = requireEnv('SES_SOURCE_ARN');
 const sesRegion = sourceArn.split(':')[3];
 
@@ -103,7 +102,7 @@ async function main() {
 
     console.log(`Dry-run (${stage}). Todos liberados. Destinatários:`);
     recipients.forEach(recipient => console.log(`  - ${recipient}`));
-    console.log(`From: ${from} | Reply-To: ${replyTo} | Assunto: ${email.subject}`);
+    console.log(`From: ${from} | Assunto: ${email.subject}`);
     console.log(`Preview em ${join(outDir, 'betaInvite.html')}`);
     console.log('Rode de novo com --send para enviar.');
     return;
@@ -117,7 +116,6 @@ async function main() {
       await ses.send(new SendEmailCommand({
         FromEmailAddress: from,
         FromEmailAddressIdentityArn: sourceArn,
-        ReplyToAddresses: [replyTo],
         Destination: { ToAddresses: [recipient] },
         Content: {
           Simple: {
