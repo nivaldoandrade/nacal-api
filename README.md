@@ -327,7 +327,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 #### Sign Up -> `/auth/sign-up`
 
-- Cadastra um novo usuário pendente e envia o código de confirmação por e-mail:
+- Cadastra um novo usuário pendente e envia o código de confirmação por e-mail. A senha é aparada (`trim`) e precisa ter pelo menos 8 caracteres depois disso (o Cognito não aceita espaço no começo ou no fim):
 
   ```bash
   curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/auth/sign-up \
@@ -362,7 +362,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 #### Confirm Sign Up -> `/auth/confirm-sign-up`
 
-- Confirma o e-mail. A senha é obrigatória (ver "Fluxo de Cadastro por E-mail"):
+- Confirma o e-mail. A senha é obrigatória e aparada (`trim`), como no `sign-up` e no `sign-in` (ver "Fluxo de Cadastro por E-mail"):
 
   ```bash
   curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/auth/confirm-sign-up \

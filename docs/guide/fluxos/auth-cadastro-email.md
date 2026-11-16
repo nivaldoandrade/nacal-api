@@ -67,13 +67,14 @@ Antes, a conta era criada já no sign-up. O problema: **qualquer um pode cadastr
 
 - O **código** prova quem tem acesso à caixa de entrada, mas não prova quem escolheu a senha.
 - Por isso a confirmação **testa a senha** enviada junto com o código. Se não for a mesma do cadastro, os dados do cadastro são descartados e a senha vira uma aleatória que ninguém sabe. O dono do e-mail recupera o acesso por "esqueci a senha" (`passwordResetRequired: true` faz o app levar o usuário para lá).
+- A senha é aparada (`trim`) no `sign-up`, no `sign-in`, no `confirm-sign-up` e no `confirmation-forgot-password`, e o app apara antes de enviar. O Cognito recusa senha que começa ou termina com espaço (`^[\S]+.*[\S]+$`), então a API nunca grava esses espaços. Sem o `trim` na confirmação, quem cadastrou `"  Senha#12345  "` e a repetia igual teria a senha tratada como errada e perderia o `PendingSignUp`.
 - Falha ao testar a senha (throttling, timeout) conta como "não confere": é melhor obrigar o dono a redefinir a senha do que aceitar a senha de outra pessoa.
 
 ## Passo a passo
 
 ### Cadastro (`POST /auth/sign-up`)
 
-1. Valida o corpo: `acceptedTerms` tem que ser `true`, a senha tem pelo menos 8 caracteres, e o perfil vem completo (nome, gênero, altura, peso, nível de atividade, objetivo e nascimento).
+1. Valida o corpo: `acceptedTerms` tem que ser `true`, a senha tem pelo menos 8 caracteres depois do `trim`, e o perfil vem completo (nome, gênero, altura, peso, nível de atividade, objetivo e nascimento).
 2. Normaliza o e-mail (`normalizeEmail`) e checa o beta.
 3. Se já existe `Account` com o e-mail, `409 EMAIL_ALREADY_IN_USE`, ou `409 EMAIL_LINKED_TO_GOOGLE` se o usuário do Cognito tem a identidade `Google`. O mesmo vale quando o usuário do Cognito existe e já está confirmado, mesmo sem `Account`: é o caso de quem começou o login com Google e não terminou (o `preSignUpTrigger` cria o usuário nativo, mas a `Account` só nasce no `oauth/callback`).
 4. Gera o `accountId` e cria o usuário no Cognito com `custom:internalId = accountId`. O e-mail é o `username`.
