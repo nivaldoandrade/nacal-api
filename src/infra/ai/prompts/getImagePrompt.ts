@@ -8,7 +8,7 @@ export function getImagePrompt() {
 
     **Step-by-step Reasoning Requirement (Reasoning before conclusions):**
     1. First, carefully examine the image to detect all recognizable food items, considering only those you are sure about. Never guess or include items not clearly visible.
-    2. Next, estimate the amount for each detected item (in grams, or in milliliters for liquids) based on visual cues and ambient references.
+    2. Next, estimate the amount for each detected item (in grams, or in milliliters for liquids) based on visual cues and ambient references, following the "Portion estimation" guidelines below.
     3. If a user note is provided, apply it following the "User note" guidelines below: add the items it mentions that are not visible, and correct the identity or quantity of visible items it refers to.
     4. Only after confident identification and quantification, estimate the macronutrient (proteins, carbohydrates, fats) values for each food item. Do NOT calculate calories — the backend will compute them later.
     5. Check whether the user note explicitly names which meal it is and, only in that case, fill the "mealType" field (see the guidelines below).
@@ -16,6 +16,14 @@ export function getImagePrompt() {
     7. Before answering, verify that every food or drink named in the user note is in "foods" (unless the note guidelines say to ignore it). If one is missing, add it.
 
     Persist until all the above objectives are fully satisfied before producing your output. Always think step-by-step internally (chain of thought) before outputting the structured response.
+
+    **Portion estimation:**
+    - List every distinct food on the plate as its own item, including small or partially hidden pieces (e.g., a sausage next to the rice, a single chicken wing).
+    - For pieces of meat, sausage, chicken, or fish, count the visible pieces and size each one against the cutlery and the plate before adding them up. A knife or fork is about 20cm long and a regular dinner plate is about 25 to 27cm wide.
+    - Typical cooked, edible weights to calibrate against: a chicken wing 30 to 40g, a drumstick 60 to 70g, a thigh 80 to 100g, a sausage link (linguiça toscana) 70 to 90g, a medium steak 100 to 120g, a thin slice of grilled beef 30 to 50g, a thick piece of grilled or roasted beef (2cm or more) 60 to 90g.
+    - For bone-in foods (chicken wings, drumsticks, thighs, ribs, chops), the quantity is the edible portion only, without the bone, and the macros refer to that edible portion, including the skin when it is visible. Mention the pieces in the label (e.g., "2 asas (80g sem osso)").
+    - Do not inflate portions: when in doubt between two sizes, prefer the one that matches the visible volume, not a generous serving.
+    - Before finishing the list, look at the plate once more, including its edges and the areas under or next to the cutlery and other foods, and add any small piece you have not listed yet (e.g., a small piece of chicken half covered by rice).
 
     **User note (optional):**
     - The user may send a short note after the image, wrapped in <user_note></user_note> tags. It describes the same meal: items that are not visible (e.g., a drink in an opaque cup, a dessert outside the frame), hidden ingredients (e.g., sugar in the coffee, filling, cooking oil), quantities, or which meal it is.
@@ -42,7 +50,7 @@ export function getImagePrompt() {
       - "PACKAGED": a closed package or wrapper with food inside (e.g., a sealed yogurt, a wrapped snack) whose content or label cannot be identified.
       - "COVERED": a covered pot, lunch box, or container whose content cannot be seen.
       - "OTHER": another item that is clearly edible and part of the meal but cannot be identified, not covered by the categories above.
-    - Never guess the type of a drink: without a clear visual cue (distinctive color, foam, label, garnish) or a mention in the note, do not add it to "foods" as water or any other drink; flag it as "DRINK" instead.
+    - Never guess the type of a drink: without a clear visual cue (distinctive color, foam, label, garnish) or a mention in the note, do not add it to "foods" as water or any other drink; flag it as "DRINK" instead. The same applies to a soda bottle or can whose brand you see but whose version (regular, zero, diet, or light) you cannot read: never assume the regular, sugared version.
     - Set "unidentified" to null when:
       - the user note already names what that item is (e.g., the note says "coca no copo" and the image shows an opaque cup). In that case the item MUST be in "foods", following the user note guidelines. A note that does not mention the item (e.g., only "almoço", or only about the plate) does NOT explain it: keep the flag;
       - the item was identified and is already in "foods";

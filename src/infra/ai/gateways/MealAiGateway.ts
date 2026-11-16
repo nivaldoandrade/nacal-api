@@ -57,6 +57,11 @@ const ASYNC_TRANSCRIPTION_TIMEOUT_MS = 30_000;
 
 const ASYNC_DOWNLOAD_TIMEOUT_MS = 15_000;
 
+const NOTE_STOP_WORDS = new Set([
+  'com', 'sem', 'que', 'uma', 'uns', 'umas', 'para', 'pra', 'por', 'meu', 'minha', 'mais', 'tipo', 'sabor', 'marca',
+  'copo', 'xicara', 'caneca', 'lata', 'garrafa', 'zero', 'acucar', 'natural', 'gelado', 'quente',
+]);
+
 const textMealSchema = z.object({
   mealType: mealTypeSchema,
   foods: z.array(taggedFoodSchema),
@@ -136,8 +141,47 @@ export class MealAiGateway {
     return {
       mealType,
       foods,
-      unidentified: unidentified ?? unidentifiedFoods[0]?.kind ?? null,
+      unidentified: MealAiGateway.resolveUnidentified({
+        mealId: meal.id,
+        unidentified: unidentified ?? unidentifiedFoods[0]?.kind ?? null,
+        foods,
+        note: meal.description,
+      }),
     };
+  }
+
+  static resolveUnidentified({
+    mealId,
+    unidentified,
+    foods,
+    note,
+  }: MealAiGateway.ResolveUnidentifiedParams): Meal.UnidentifiedKind | null {
+    if (unidentified !== Meal.UnidentifiedKind.DRINK || !note) {
+      return unidentified;
+    }
+
+    const noteWords = new Set(MealAiGateway.words(note));
+    const noteDrink = foods.find((food) => (
+      /\d\s*ml\b/i.test(food.quantity)
+      && MealAiGateway.words(food.name).some((word) => noteWords.has(word))
+    ));
+
+    if (!noteDrink) {
+      return unidentified;
+    }
+
+    logger.info('unidentified drink explained by note', { mealId, drink: noteDrink.name });
+
+    return null;
+  }
+
+  private static words(value: string): string[] {
+    return value
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .split(/[^a-z]+/)
+      .filter((word) => word.length >= 3 && !NOTE_STOP_WORDS.has(word));
   }
 
   async extractFoodsFromText({
@@ -477,6 +521,13 @@ export namespace MealAiGateway {
   export type SplitFoods = {
     foods: Food[];
     unidentifiedFoods: { name: string; kind: Meal.UnidentifiedKind }[];
+  }
+
+  export type ResolveUnidentifiedParams = {
+    mealId: string;
+    unidentified: Meal.UnidentifiedKind | null;
+    foods: Food[];
+    note: string | null | undefined;
   }
 
   export type SplitUnidentifiedFoodsParams = {
