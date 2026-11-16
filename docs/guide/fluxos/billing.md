@@ -42,9 +42,14 @@ stateDiagram-v2
     ACTIVE --> CANCELED: POST /billing/cancel<br/>ou SUBSCRIPTION_CANCELED
     PAST_DUE --> CANCELED: POST /billing/cancel<br/>ou SUBSCRIPTION_CANCELED<br/>ou checkout com o Pro já vencido
 
+    ACTIVE --> CANCELED: estorno total ou chargeback<br/>do ciclo atual
+    PAST_DUE --> CANCELED: estorno total ou chargeback<br/>do ciclo atual
+
     CANCELED --> CANCELED: pagamento da mesma assinatura<br/>só estende o paidUntil
     CANCELED --> ACTIVE: novo checkout pago
 ```
+
+O estorno do anual com renovação adiantada só volta o `paidUntil` um ano e mantém `ACTIVE` enquanto o ano anterior ainda vale (ver [Estorno e chargeback](#estorno-e-chargeback)).
 
 Os webhooks `PAYMENT_OVERDUE` e `SUBSCRIPTION_CANCELED` valem para **qualquer status diferente de `CANCELED`**, inclusive `TRIALING`, desde que sejam da assinatura do Asaas guardada em `gatewayRefs.subscriptionId` (ou que um dos dois lados não tenha referência). O diagrama mostra só os casos comuns.
 
@@ -81,7 +86,7 @@ sequenceDiagram
         API-->>U: 200 com o invoiceUrl e type INVOICE
     else mensal ACTIVE ou PAST_DUE com o Pro vencido
         API->>As: DELETE /v3/subscriptions/{id}
-        API->>DB: Subscription CANCELED e segue para o checkout
+        API->>DB: Subscription CANCELED (escrita condicional) e segue para o checkout
     end
     API->>DB: PENDING_CHECKOUT#accountId existe, do mesmo plano e returnUrl, com mais de 10 min?
     alt existe
@@ -127,20 +132,51 @@ A resposta é `{ checkoutUrl, expiresAt, type }`. Com `type: 'INVOICE'`, o app a
 ### Passo a passo do webhook
 
 1. **Segurança**: o `@IpAllowlist` recusa IPs fora de `ASAAS_WEBHOOK_ALLOWED_IPS` (`403`). Sem a variável, valem os 4 IPs oficiais de produção do Asaas (`ASAAS_WEBHOOK_PRODUCTION_IPS` em `AppConfig.ts`). `*` desliga a checagem, para sandbox e dev. Depois, `parseWebhook` compara o header `asaas-access-token` com `ASAAS_WEBHOOK_TOKEN`. Token errado lança `BillingError` (`502`).
-2. **Tradução**: o evento do Asaas vira um `BillingEvent` neutro. `PAYMENT_CONFIRMED` e `PAYMENT_RECEIVED` viram `PAYMENT_SUCCEEDED`. `SUBSCRIPTION_CANCELED` e `SUBSCRIPTION_DELETED` viram `SUBSCRIPTION_CANCELED`. Eventos desconhecidos são ignorados (`200 { received: false }`).
+2. **Tradução**: o evento do Asaas vira um `BillingEvent` neutro. `PAYMENT_CONFIRMED` e `PAYMENT_RECEIVED` viram `PAYMENT_SUCCEEDED`. `SUBSCRIPTION_CANCELED` e `SUBSCRIPTION_DELETED` viram `SUBSCRIPTION_CANCELED`. `PAYMENT_REFUNDED`, `PAYMENT_PARTIALLY_REFUNDED`, `PAYMENT_CHARGEBACK_REQUESTED`, `PAYMENT_CHARGEBACK_DISPUTE` e `PAYMENT_AWAITING_CHARGEBACK_REVERSAL` viram `PAYMENT_REVERSED`, com um `kind` (`REFUNDED`, `PARTIALLY_REFUNDED`, `CHARGEBACK_REQUESTED`, `CHARGEBACK_DISPUTE`, `CHARGEBACK_REVERSAL_PENDING`). Eventos desconhecidos são ignorados (`200 { received: false }`). Os eventos chegam só se estiverem marcados no webhook do painel do Asaas (sandbox e produção têm webhooks separados); o `PAYMENT_REFUND_IN_PROGRESS` fica desmarcado de propósito, porque o efeito vem com o `PAYMENT_REFUNDED`.
 3. **Idempotência**: o `id` do evento é gravado na `RateLimitTable` (`RL#webhook-event#<id>`, TTL de 14 dias). Um evento repetido responde `200` sem fazer nada.
 4. **Quem é o dono**: pelo `externalReference`. Se não vier, pelo item `GATEWAY#<checkoutSession>` (ou `GATEWAY#<checkoutId>` nos eventos de checkout) e, por último, pelo `GATEWAY#<subscriptionId>`. Sem dono, responde `200 { received: false }`. A reconciliação acusa esse pagamento depois.
 5. **Aplicação**:
    - **Pagamento já coberto**: se o `paidUntil` já cobre o ciclo do pagamento (vencimento + 1 ciclo), nada é gravado (`applied: false`): nem status, nem plano, nem `subscriptionId`. É o caso do `PAYMENT_RECEIVED` do cartão, que chega uns 30 dias depois do `PAYMENT_CONFIRMED` e, sem essa regra, tiraria a conta de `PAST_DUE` ou trocaria a assinatura guardada por uma antiga.
+   - **Pagamento já estornado**: um `PAYMENT_SUCCEEDED` de um pagamento que está em `reversedPaymentIds` não grava nada.
    - `PAYMENT_SUCCEEDED`: status `ACTIVE`, `planId` do plano pago (quem fez o trial e pagou o anual passa a `PRO_YEARLY`) e `paidUntil = vencimento + 1 ciclo`. Nunca **reduz** um `paidUntil` existente, então o segundo evento do mesmo pagamento não soma de novo.
    - **Renovação adiantada do anual**: se o anual ainda vale, soma um ano ao `paidUntil` atual em vez de contar do vencimento, para o assinante não perder os dias que faltavam. Limite conhecido: dois pagamentos do anual com menos de um ano entre os vencimentos, ambos antes do `paidUntil`, contam como um só (o app só oferece renovar nos últimos 30 dias).
    - **Pagamento de assinatura já cancelada**: um pagamento da **mesma** assinatura do Asaas que o usuário cancelou (`gatewayRefs.subscriptionId`) não reativa, só estende o `paidUntil`. Isso cobre o `PAYMENT_RECEIVED` do cartão, que chega uns 30 dias depois do `PAYMENT_CONFIRMED`. Pagamento de uma assinatura nova reativa normalmente.
    - `PAYMENT_OVERDUE`: status `PAST_DUE`, exceto se já estiver `CANCELED`. A carência de 3 dias mantém o Pro enquanto o usuário paga a fatura vencida pelo app ("Pagar agora").
    - `SUBSCRIPTION_CANCELED`: status `CANCELED`, com `canceledAt`, exceto se já estiver `CANCELED`.
    - `PAYMENT_OVERDUE` e `SUBSCRIPTION_CANCELED` de uma assinatura do Asaas **diferente** da guardada são ignorados. Sem isso, o `SUBSCRIPTION_DELETED` atrasado da assinatura antiga (cancelada no checkout com o Pro vencido) cancelaria a nova.
-   - **Rede de segurança**: publica um alerta no SNS (`AlertGateway`, o mesmo tópico dos alarmes) com a conta, a situação guardada e o pagamento quando chega um `PAYMENT_SUCCEEDED` (a) que não é da assinatura mensal guardada, com ela fora de `CANCELED`, ou (b) de uma assinatura do Asaas com o anual pago no futuro (pagamento coberto, que não grava nada). Pode ser uma segunda assinatura cobrando junto. Nada é cancelado automaticamente: conferir no painel do Asaas. No caso (a), o pagamento é aplicado como antes (a assinatura do pagamento passa a ser a guardada). A reconciliação não dispara o caso (b), para não alertar duas vezes.
+   - **Rede de segurança**: publica um alerta no SNS (`AlertGateway`, o mesmo tópico dos alarmes) com a conta, a situação guardada e o pagamento quando chega um `PAYMENT_SUCCEEDED` (a) que não é da assinatura mensal guardada, com ela fora de `CANCELED`, ou (b) de uma assinatura do Asaas com o anual pago no futuro (pagamento coberto, que não grava nada). Pode ser uma segunda assinatura cobrando junto. Nada é cancelado automaticamente: conferir no painel do Asaas ([runbook de alertas](../runbooks/alertas.md#pagamento-de-outra-assinatura-com-o-pro-ativo)). No caso (a), o pagamento é aplicado como antes (a assinatura do pagamento passa a ser a guardada). A reconciliação não dispara o caso (b), para não alertar duas vezes.
+   - `PAYMENT_REVERSED`: ver [Estorno e chargeback](#estorno-e-chargeback).
    - `CHECKOUT_PAID`, `CHECKOUT_EXPIRED` e `CHECKOUT_CANCELED` apagam o `PENDING_CHECKOUT#<accountId>`, se ainda for desse checkout. Eles e o `PAYMENT_CREATED` não ativam nada: a ativação vem pelo evento de pagamento.
-6. Duas entregas simultâneas criando a mesma assinatura: o `create` é condicional. Quem perde relê a assinatura e faz o merge.
+6. **Escrita condicional**: a assinatura é lida com leitura forte e gravada com `version` (`SubscriptionRepository.save`). Se outra escrita gravou no meio (outro webhook, o cancelamento, o checkout ou a reconciliação), o webhook relê e decide de novo a partir do estado novo, até 3 vezes; depois disso a Lambda falha (`500`), o evento fica sem marcar e o Asaas reenvia. Duas entregas simultâneas criando a mesma assinatura caem no mesmo caminho: o `create` é condicional, e quem perde relê e aplica por cima. Uma chamada ao Asaas feita antes do conflito (cancelar a assinatura no estorno) não é repetida nas novas tentativas da mesma invocação.
+
+### Estorno e chargeback
+
+O `paidUntil` não guarda qual pagamento o gerou. Por isso o estorno desconta **um ciclo** do `paidUntil` atual, e só quando o pagamento devolvido cobre o período atual:
+
+| Evento (`kind`) | Efeito |
+|---|---|
+| `REFUNDED` (estorno total) ou `CHARGEBACK_REQUESTED` (chargeback aberto) | Desconta o ciclo, se as condições abaixo valerem |
+| `PARTIALLY_REFUNDED` | Só alerta (em geral é desconto de cortesia) |
+| `CHARGEBACK_DISPUTE` | Só alerta: o Pro já foi descontado quando o chargeback foi aberto |
+| `CHARGEBACK_REVERSAL_PENDING` (disputa ganha) | Só alerta: o Pro **não volta sozinho**, devolver à mão se for o caso |
+
+Condições para descontar (senão, só alerta, dizendo por que nada mudou):
+
+1. **Plano atual**: o pagamento é do mesmo plano da assinatura guardada. Na mensal, a assinatura do Asaas do pagamento tem que ser a de `gatewayRefs.subscriptionId`; no anual, o pagamento é avulso (sem assinatura do Asaas). O estorno de uma cobrança duplicada de outra assinatura (o caso do alerta acima) não tira o Pro.
+2. **Pagamento aplicado**: o `paymentId` está em `appliedPaymentIds` (os últimos 24 pagamentos que de fato mudaram o `paidUntil`). O estorno de um pagamento que chegou já coberto (pago em dobro, por exemplo dois checkouts do anual no mesmo dia) não desconta o ciclo legítimo. Assinaturas gravadas antes desse campo existir (sem a lista) pulam esta condição até o próximo pagamento.
+3. **Período atual**: o fim do ciclo pago (vencimento + 1 ciclo) é mais de 7 dias depois de `paidUntil` - 1 ciclo. A folga cobre o fim do mês (um vencimento em 31/01 dá `paidUntil` 03/03 e o de 28/02 dá 28/03) e não atrapalha a renovação adiantada do anual (no máximo 31 dias antes). O estorno de um mês antigo, já usado, não muda nada.
+4. **Sem assinatura substituída**: quando um pagamento de outra assinatura do Asaas entra por cima da mensal guardada ainda ativa (o caso do alerta de cobrança em dobro), a anterior fica em `replacedSubscriptionId`. Enquanto ela estiver lá, o estorno só alerta: o Pro pago pela outra assinatura não é tirado, e a assinatura que sobrou é cancelada à mão no painel. O campo é limpo no próximo pagamento normal da assinatura guardada.
+5. **Ainda não descontado**: o `paymentId` não está em `reversedPaymentIds`. O id é gravado na mesma escrita do desconto, então o mesmo estorno de novo (reenvio, `PAYMENT_REFUNDED` depois do chargeback, reconciliação) não desconta duas vezes.
+
+O desconto:
+
+- `paidUntil` volta um ciclo. Na mensal, ele vai para o menor entre `paidUntil` - 1 mês e o vencimento do pagamento devolvido (que já passou), e o Pro acaba. No anual com renovação adiantada, volta para o fim do ano que já estava pago e a conta continua Pro até lá.
+- **Mensal fora de `CANCELED`**: cancela a assinatura no Asaas (`DELETE /v3/subscriptions/{id}`, uma chamada de até 10 s, que cabe nos 15 s da Lambda), para não haver cobrança nova de quem pediu o dinheiro de volta. Se o Asaas falhar, nada é gravado, o evento fica sem marcar e o Asaas reenvia. Se o `DELETE` funcionou e a gravação falhou, o reenvio chama o `DELETE` de novo, o que não tem efeito (ele é idempotente no Asaas).
+- O estorno de uma assinatura do Asaas que não é a guardada (ou já foi substituída) não a cancela: só alerta.
+- Status `CANCELED` (com `canceledAt`) na mensal cancelada no Asaas ou quando o novo `paidUntil` já passou. `CANCELED` não tem a carência de 3 dias, então o Pro acaba na hora. O anual que ainda vale continua `ACTIVE`.
+- O app não muda: a conta aparece como expirada em Planos (`CANCELED` com `paidUntil` no passado) e pode assinar de novo.
+
+**Alerta**: todo evento de estorno ou chargeback com dono publica um alerta no SNS. O assunto diz o evento e se o Pro mudou (ex.: "NaCal: estorno total · Pro descontado", "NaCal: estorno parcial · Pro sem mudança"); o corpo diz o que aconteceu, o que fazer, a conta, o pagamento e o estado antes e depois. Falha do alerta não falha o webhook. O que fazer com cada e-mail, com exemplos e os comandos de ajuste manual: [runbook de alertas](../runbooks/alertas.md#estorno-e-chargeback).
 
 O TTL de 14 dias do registro de idempotência acompanha a janela em que o Asaas reenvia eventos. O `reservedConcurrency: 5` da Lambda do webhook é o teto de custo e de concorrência dessa rota pública.
 
@@ -166,7 +202,7 @@ flowchart TD
 
 O anual não tem assinatura no Asaas (é cobrança avulsa), então não tem o que cancelar lá: ele só não é renovado. Por isso o app **não mostra** "Cancelar" para o anual ativo. Se a rota for chamada mesmo assim, o anual cai no ramo "sem `subscriptionId`" e recebe `502 BILLING_ERROR`. O aviso de vencimento do anual aparece no app a partir de 30 dias antes do fim.
 
-O cancelamento pelo app é síncrono: cancela no Asaas e grava `CANCELED` na mesma request, sem depender de webhook.
+O cancelamento pelo app é síncrono: cancela no Asaas e grava `CANCELED` na mesma request, sem depender de webhook. A gravação é condicional (`version`): se um webhook gravou enquanto o Asaas respondia, a assinatura é relida e só o `CANCELED` é reaplicado, sem chamar o Asaas de novo. Se nesse meio-tempo a assinatura guardada passou a ser outra (pagamento de outra assinatura do Asaas), nada é gravado e a resposta traz o status atual.
 
 ## Erros
 
@@ -179,6 +215,7 @@ O cancelamento pelo app é síncrono: cancela no Asaas e grava `CANCELED` na mes
 | Cancelar sem assinatura | `400 BAD_REQUEST` |
 | Cancelar o anual (sem `subscriptionId`) | `502 BILLING_ERROR` |
 | O Asaas responde com erro | `502 BILLING_ERROR` |
+| Três conflitos seguidos ao gravar a assinatura (escritas simultâneas) | `500` (no webhook, o Asaas reenvia) |
 | O Asaas não responde em 10 s ou falha a rede | `502 BILLING_ERROR` (ver abaixo) |
 | Webhook de IP fora da allowlist | `403 FORBIDDEN` |
 | Webhook com token errado | `502 BILLING_ERROR` |

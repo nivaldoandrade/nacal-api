@@ -8,6 +8,13 @@ import { DEFAULT_TIME_ZONE } from '@shared/utils/timeZone';
 
 @Injectable()
 export class AsaasPaymentGateway extends IPaymentGateway {
+  static readonly REVERSAL_EVENT_KINDS: Record<AsaasPaymentGateway.ReversalEvent, IPaymentGateway.ReversalKind> = {
+    PAYMENT_REFUNDED: 'REFUNDED',
+    PAYMENT_PARTIALLY_REFUNDED: 'PARTIALLY_REFUNDED',
+    PAYMENT_CHARGEBACK_REQUESTED: 'CHARGEBACK_REQUESTED',
+    PAYMENT_CHARGEBACK_DISPUTE: 'CHARGEBACK_DISPUTE',
+    PAYMENT_AWAITING_CHARGEBACK_REVERSAL: 'CHARGEBACK_REVERSAL_PENDING',
+  };
 
   constructor(private readonly config: AppConfig) {
     super();
@@ -104,41 +111,27 @@ export class AsaasPaymentGateway extends IPaymentGateway {
   }
 
   async listPaidPayments({ dueDateFrom }: IPaymentGateway.ListPaidPaymentsInput): Promise<IPaymentGateway.PaidPayment[]> {
-    const limit = 100;
     const payments: IPaymentGateway.PaidPayment[] = [];
 
     for (const status of ['CONFIRMED', 'RECEIVED']) {
-      let offset = 0;
-      let hasMore = true;
+      payments.push(...await this.listPaymentsByStatus(status, dueDateFrom));
+    }
 
-      while (hasMore) {
-        const query = new URLSearchParams({
-          status,
-          'dueDate[ge]': dueDateFrom,
-          offset: String(offset),
-          limit: String(limit),
-        });
+    return payments;
+  }
 
-        const response = await this.request<AsaasPaymentGateway.ListPaymentsResponse>(`/v3/payments?${query}`);
+  async listReversedPayments({ dueDateFrom }: IPaymentGateway.ListPaidPaymentsInput): Promise<IPaymentGateway.ReversedPayment[]> {
+    const statusKinds: Array<[string, IPaymentGateway.ReversalKind]> = [
+      ['REFUNDED', 'REFUNDED'],
+      ['CHARGEBACK_REQUESTED', 'CHARGEBACK_REQUESTED'],
+      ['CHARGEBACK_DISPUTE', 'CHARGEBACK_REQUESTED'],
+    ];
+    const payments: IPaymentGateway.ReversedPayment[] = [];
 
-        for (const payment of response.data) {
-          if (payment.deleted) {
-            continue;
-          }
+    for (const [status, kind] of statusKinds) {
+      const statusPayments = await this.listPaymentsByStatus(status, dueDateFrom);
 
-          payments.push({
-            paymentId: payment.id,
-            subscriptionRef: payment.subscription ?? undefined,
-            checkoutSession: payment.checkoutSession ?? undefined,
-            externalReference: payment.externalReference ?? undefined,
-            dueDate: payment.dueDate,
-            amount: payment.value,
-          });
-        }
-
-        hasMore = response.hasMore;
-        offset += limit;
-      }
+      payments.push(...statusPayments.map((payment) => ({ ...payment, kind })));
     }
 
     return payments;
@@ -179,6 +172,21 @@ export class AsaasPaymentGateway extends IPaymentGateway {
           dueDate: payload.payment?.dueDate ?? '',
           amount: payload.payment?.value ?? 0,
         };
+      case 'PAYMENT_REFUNDED':
+      case 'PAYMENT_PARTIALLY_REFUNDED':
+      case 'PAYMENT_CHARGEBACK_REQUESTED':
+      case 'PAYMENT_CHARGEBACK_DISPUTE':
+      case 'PAYMENT_AWAITING_CHARGEBACK_REVERSAL':
+        return {
+          ...base,
+          type: 'PAYMENT_REVERSED',
+          kind: AsaasPaymentGateway.REVERSAL_EVENT_KINDS[payload.event],
+          paymentId: payload.payment?.id ?? '',
+          subscriptionRef: payload.payment?.subscription,
+          checkoutSession: payload.payment?.checkoutSession,
+          dueDate: payload.payment?.dueDate ?? '',
+          amount: payload.payment?.value ?? 0,
+        };
       case 'PAYMENT_OVERDUE':
         return { ...base, type: 'PAYMENT_OVERDUE', paymentId: payload.payment?.id ?? '', subscriptionRef: payload.payment?.subscription, checkoutSession: payload.payment?.checkoutSession };
       case 'SUBSCRIPTION_CANCELED':
@@ -187,6 +195,44 @@ export class AsaasPaymentGateway extends IPaymentGateway {
       default:
         return null;
     }
+  }
+
+  private async listPaymentsByStatus(status: string, dueDateFrom: string): Promise<IPaymentGateway.PaidPayment[]> {
+    const limit = 100;
+    const payments: IPaymentGateway.PaidPayment[] = [];
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const query = new URLSearchParams({
+        status,
+        'dueDate[ge]': dueDateFrom,
+        offset: String(offset),
+        limit: String(limit),
+      });
+
+      const response = await this.request<AsaasPaymentGateway.ListPaymentsResponse>(`/v3/payments?${query}`);
+
+      for (const payment of response.data) {
+        if (payment.deleted) {
+          continue;
+        }
+
+        payments.push({
+          paymentId: payment.id,
+          subscriptionRef: payment.subscription ?? undefined,
+          checkoutSession: payment.checkoutSession ?? undefined,
+          externalReference: payment.externalReference ?? undefined,
+          dueDate: payment.dueDate,
+          amount: payment.value,
+        });
+      }
+
+      hasMore = response.hasMore;
+      offset += limit;
+    }
+
+    return payments;
   }
 
   private async request<T>(path: string, init?: AsaasPaymentGateway.RequestInit): Promise<T> {
@@ -265,6 +311,13 @@ export namespace AsaasPaymentGateway {
       externalReference?: string | null;
     }>;
   };
+
+  export type ReversalEvent =
+    | 'PAYMENT_REFUNDED'
+    | 'PAYMENT_PARTIALLY_REFUNDED'
+    | 'PAYMENT_CHARGEBACK_REQUESTED'
+    | 'PAYMENT_CHARGEBACK_DISPUTE'
+    | 'PAYMENT_AWAITING_CHARGEBACK_REVERSAL';
 
   export type WebhookPayload = {
     id: string;

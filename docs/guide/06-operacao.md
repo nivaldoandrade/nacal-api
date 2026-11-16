@@ -44,7 +44,7 @@ AWS_PROFILE=nacal-prod sls deploy function -f processMeal --stage prod
 
 ## Alarmes
 
-Todos publicam no tópico SNS `DQLAlarmTopic` (o nome é esse mesmo, com `DQL`, é como aparece no console), que manda e-mail para `DLQ_ALARM_EMAIL`. Só ficam ativos em prod.
+Todos publicam no tópico SNS `DQLAlarmTopic` (o nome é esse mesmo, com `DQL`, é como aparece no console), que manda e-mail para `DLQ_ALARM_EMAIL`. Os alarmes do CloudWatch só ficam ativos em prod; os alertas do código (estorno e chargeback, pagamento de outra assinatura, reconciliação) também saem em dev. O que fazer com cada e-mail, com exemplos e comandos: [runbook de alertas](runbooks/alertas.md).
 
 | Alarme | Dispara quando | Significa | O que fazer |
 |---|---|---|---|
@@ -52,7 +52,9 @@ Todos publicam no tópico SNS `DQLAlarmTopic` (o nome é esse mesmo, com `DQL`, 
 | `MealsQueueAgeAlarm` | Mensagem mais antiga da `MealsQueue` passa de 2 min, por 2 min seguidos | O processamento está atrasado ou parado | Ver erros e throttling da `processMeal` e a disponibilidade da OpenAI |
 | `MealUploadCheckDLQAlarm` | Alguma mensagem na `MealUploadCheckDLQ` | A checagem de 15 min falhou 3 vezes | Ver os logs da `checkMealUpload` e conferir a refeição e a cota na mão |
 | `ReconcilePaymentsErrorsAlarm` | Erro na Lambda `reconcilePayments` | A reconciliação não rodou | Ver os logs. Ela roda de novo na hora seguinte. |
-| E-mail "reconciliação encontrou divergências" | Pagamento ativado pela reconciliação, sem conta ou com erro | O webhook falhou ou um pagamento não tem dono | Ver [reconciliação](fluxos/billing-reconciliacao.md#o-e-mail-de-alerta) |
+| E-mail "reconciliação encontrou divergências" | Pagamento ativado ou estorno aplicado pela reconciliação, sem conta ou com erro | O webhook falhou ou um pagamento não tem dono | Ver [runbook de alertas](runbooks/alertas.md#reconciliação-encontrou-divergências) |
+| E-mail "estorno ... · Pro descontado/sem mudança" | Evento de estorno ou chargeback no webhook do Asaas | O Pro foi descontado ou não, conforme o caso | Ver [runbook de alertas](runbooks/alertas.md#estorno-e-chargeback) |
+| E-mail "pagamento de outra assinatura com o Pro ativo" | Pagamento que não é da assinatura guardada | Pode haver duas cobranças ativas | Ver [runbook de alertas](runbooks/alertas.md#pagamento-de-outra-assinatura-com-o-pro-ativo) |
 | GuardDuty (findings de severidade média para cima) | Atividade suspeita na conta | — | Configurado à mão em prod, fora do `serverless.yml` |
 
 As DLQs guardam mensagens por 14 dias.
@@ -80,6 +82,7 @@ Marcadores úteis para buscar no CloudWatch Logs Insights:
 | Tarefa | Onde |
 |---|---|
 | Excluir a conta de um usuário (manual, durante o beta) | [Runbook de exclusão de conta](runbooks/exclusao-de-conta.md) |
+| Entender um e-mail de alerta, encerrar ou devolver o Pro à mão | [Runbook de alertas](runbooks/alertas.md) |
 | Convidar e-mails para o beta | README da API, seção "Convidar para o beta" (`scripts/sendBetaInvites.ts`) |
 | Ver os e-mails transacionais renderizados | `npx tsx scripts/previewEmails.ts` (restrições do Cognito em [cadastro por e-mail](fluxos/auth-cadastro-email.md#e-mails)) |
 | Criar refeições de teste pela API | `scripts/createMeal.ts`, `scripts/createTextMeal.ts` |

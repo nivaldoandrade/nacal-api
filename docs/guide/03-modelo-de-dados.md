@@ -54,6 +54,7 @@ erDiagram
         string status
         string planId
         string paidUntil
+        number version
     }
     MEAL {
         string id
@@ -89,7 +90,7 @@ Os atributos completos de cada entidade estão em [item collections](#item-colle
 | AP03 | Conta + perfil + meta + assinatura de uma vez | Tabela | `PK = ACCOUNT#<accountId>`, `begins_with(SK, ACCOUNT#<accountId>)` | `Query`, `Limit 5` | `GetProfileAndGoalByAccountId` (`GET /me`) |
 | AP04 | Buscar perfil | Tabela | `PK = ACCOUNT#<accountId>`, `SK = ACCOUNT#<accountId>#PROFILE` | `GetItem` | `ProfileRepository.findByAccountId` |
 | AP05 | Buscar meta | Tabela | `PK = ACCOUNT#<accountId>`, `SK = ACCOUNT#<accountId>#GOAL` | `GetItem` | `GoalRepository.findByAccountId` |
-| AP06 | Buscar assinatura | Tabela | `PK = ACCOUNT#<accountId>`, `SK = ACCOUNT#<accountId>#SUBSCRIPTION` | `GetItem` | `SubscriptionRepository.findByAccountId` |
+| AP06 | Buscar assinatura | Tabela | `PK = ACCOUNT#<accountId>`, `SK = ACCOUNT#<accountId>#SUBSCRIPTION` | `GetItem` consistente | `SubscriptionRepository.findByAccountId` |
 | AP07 | Listar refeições do dia, da mais nova para a mais antiga | `GSI1` | `GSI1PK = MEAL#<accountId>#<AAAA-MM-DD>` + filtro `status = SUCCESS` | `Query`, `ScanIndexForward false` | `ListMealsByAccountIdAndDay` |
 | AP08 | Buscar refeição pelo id | Tabela | `PK = ACCOUNT#<accountId>MEAL#<mealId>`, `SK = MEAL#<mealId>` | `GetItem`. Consistente no polling, em remover e restaurar e na checagem de 15 min. Eventual em adicionar itens e excluir | `MealRepository.findById` |
 | AP09 | Buscar cadastro pendente | Tabela | `PK = SK = PENDING_SIGNUP#<accountId>` | `GetItem` consistente | `PendingSignUpRepository.findByAccountId` |
@@ -110,8 +111,8 @@ Quase toda escrita é condicional. A condição é o que garante a regra de neg�
 | AW02 | Criar conta sem onboarding | `PutItem` | — | `AccountsRepository.create` |
 | AW03 | Editar perfil ou meta | `UpdateItem` | `attribute_exists(PK)` | `ProfileRepository.save`, `GoalRepository.save` |
 | AW04 | Criar cadastro pendente / apagar | `PutItem` / `DeleteItem` | — | `PendingSignUpRepository` |
-| AW05 | Criar assinatura (trial ou primeiro pagamento) | `PutItem` | `attribute_not_exists(SK)`: só se nunca existiu | `SubscriptionRepository.create` |
-| AW06 | Atualizar assinatura | `PutItem` do item inteiro | — (duas escritas ao mesmo tempo, ex.: cancelamento e webhook, podem perder a atualização uma da outra) | `SubscriptionRepository.save` |
+| AW05 | Criar assinatura (trial ou primeiro pagamento) | `PutItem` com `version = 1` | `attribute_not_exists(SK)`: só se nunca existiu | `SubscriptionRepository.create` |
+| AW06 | Atualizar assinatura | `PutItem` do item inteiro, com `version` + 1 | `attribute_exists(PK)` e `version` igual ao lido (ou `attribute_not_exists(version)` nos itens antigos). No conflito, `save` devolve `false` e quem chamou relê e reaplica (até 3 vezes), sem repetir a chamada ao Asaas | `SubscriptionRepository.save` (webhook, reconciliação, cancelamento, checkout) |
 | AW07 | Ligar ID do Asaas à conta | `PutItem` | — | `SubscriptionRepository.linkGatewayRef` |
 | AW08 | Criar refeição | `PutItem` | — | `MealRepository.create` |
 | AW09 | Refeição `UPLOADING` → `QUEUED` | `UpdateItem` | `status IN (UPLOADING, QUEUED)` | `markQueued` |
@@ -192,6 +193,10 @@ Uma item collection é o conjunto de itens que dividem a mesma `PK`. O atributo 
 | `trialEndsAt` | string (data), opcional | |
 | `paidUntil` | string (data), opcional | Junto com o status, decide se é Pro |
 | `canceledAt` | string (data), opcional | |
+| `appliedPaymentIds` | lista de string, opcional | Os últimos 24 pagamentos do Asaas que mudaram o `paidUntil`. Só o estorno de um deles desconta um ciclo |
+| `replacedSubscriptionId` | string, opcional | Mensal ainda ativa que foi substituída por um pagamento de outra assinatura do Asaas (cobrança em dobro). Enquanto existir, o estorno só alerta |
+| `reversedPaymentIds` | lista de string, opcional | Pagamentos do Asaas cujo estorno total ou chargeback já descontou um ciclo do `paidUntil`. Garante que o mesmo estorno não desconta duas vezes |
+| `version` | number, opcional | Controle de concorrência do `save` (AW06). Começa em 1 no `create`; itens gravados antes de existir não têm |
 | `createdAt` | string (data) | |
 
 ### Collection da refeição

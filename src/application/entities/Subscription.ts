@@ -21,6 +21,14 @@ export class Subscription {
 
   canceledAt?: Date;
 
+  appliedPaymentIds?: string[];
+
+  reversedPaymentIds?: string[];
+
+  replacedSubscriptionId?: string;
+
+  version?: number;
+
   readonly createdAt: Date;
 
   constructor(attr: Subscription.Attributes) {
@@ -33,6 +41,10 @@ export class Subscription {
     this.trialEndsAt = attr.trialEndsAt;
     this.paidUntil = attr.paidUntil;
     this.canceledAt = attr.canceledAt;
+    this.appliedPaymentIds = attr.appliedPaymentIds;
+    this.reversedPaymentIds = attr.reversedPaymentIds;
+    this.replacedSubscriptionId = attr.replacedSubscriptionId;
+    this.version = attr.version;
     this.createdAt = attr.createdAt ?? new Date();
   }
 
@@ -75,6 +87,10 @@ export namespace Subscription {
     trialEndsAt?: Date;
     paidUntil?: Date;
     canceledAt?: Date;
+    appliedPaymentIds?: string[];
+    reversedPaymentIds?: string[];
+    replacedSubscriptionId?: string;
+    version?: number;
     createdAt?: Date;
   }
 

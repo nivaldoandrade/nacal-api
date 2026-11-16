@@ -6,6 +6,7 @@ export abstract class IPaymentGateway {
   abstract cancelSubscription(input: { subscriptionRef: string }): Promise<void>;
   abstract findOpenSubscriptionPayment(input: { subscriptionRef: string }): Promise<IPaymentGateway.OpenPayment | null>;
   abstract listPaidPayments(input: IPaymentGateway.ListPaidPaymentsInput): Promise<IPaymentGateway.PaidPayment[]>;
+  abstract listReversedPayments(input: IPaymentGateway.ListPaidPaymentsInput): Promise<IPaymentGateway.ReversedPayment[]>;
   abstract parseWebhook(headers: Record<string, string | undefined>, rawBody: string): Promise<IPaymentGateway.BillingEvent | null>;
 }
 
@@ -26,10 +27,20 @@ export namespace IPaymentGateway {
     amount: number;
   };
 
+  export type ReversalKind =
+    | 'REFUNDED'
+    | 'PARTIALLY_REFUNDED'
+    | 'CHARGEBACK_REQUESTED'
+    | 'CHARGEBACK_DISPUTE'
+    | 'CHARGEBACK_REVERSAL_PENDING';
+
+  export type ReversedPayment = PaidPayment & { kind: ReversalKind };
+
   export type BillingEvent = { eventId: string; externalReference?: string } & (
     | { type: 'CHECKOUT_PAID'; checkoutId: string; subscriptionRef?: string }
     | { type: 'PAYMENT_CREATED'; paymentId: string; subscriptionRef?: string; checkoutSession?: string }
     | { type: 'PAYMENT_SUCCEEDED'; paymentId: string; subscriptionRef?: string; checkoutSession?: string; dueDate: string; amount: number }
+    | { type: 'PAYMENT_REVERSED'; kind: ReversalKind; paymentId: string; subscriptionRef?: string; checkoutSession?: string; dueDate: string; amount: number }
     | { type: 'PAYMENT_OVERDUE'; paymentId: string; subscriptionRef?: string; checkoutSession?: string }
     | { type: 'SUBSCRIPTION_CANCELED'; subscriptionRef?: string }
     | { type: 'CHECKOUT_EXPIRED' | 'CHECKOUT_CANCELED'; checkoutId: string }

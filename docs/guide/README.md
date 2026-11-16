@@ -48,6 +48,7 @@ O setup local, as variáveis de ambiente e o deploy estão no [README da API](..
 | Página | Conteúdo |
 |---|---|
 | [Exclusão de conta](runbooks/exclusao-de-conta.md) | Exclusão manual de uma conta em prod durante o beta (LGPD): Asaas, S3, DynamoDB e Cognito |
+| [Alertas por e-mail](runbooks/alertas.md) | O que significa cada alerta (estorno e chargeback, outra assinatura, reconciliação, CloudWatch, GuardDuty), o que fazer, exemplos e o ajuste manual da assinatura |
 
 ## Modelo de página de fluxo
 

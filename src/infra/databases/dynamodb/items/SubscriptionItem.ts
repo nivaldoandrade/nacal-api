@@ -77,6 +77,10 @@ export namespace SubscriptionItem {
     trialEndsAt?: string;
     paidUntil?: string;
     canceledAt?: string;
+    appliedPaymentIds?: string[];
+    reversedPaymentIds?: string[];
+    replacedSubscriptionId?: string;
+    version?: number;
     createdAt: string;
   }
 

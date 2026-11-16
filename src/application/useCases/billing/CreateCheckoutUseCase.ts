@@ -114,10 +114,7 @@ export class CreateCheckoutUseCase {
 
     if (!isPro) {
       await this.paymentGateway.cancelSubscription({ subscriptionRef });
-
-      subscription.status = Subscription.Status.CANCELED;
-      subscription.canceledAt = now;
-      await this.subscriptionRepository.save(subscription);
+      await this.markGatewaySubscriptionCanceled(subscription, subscriptionRef, now);
 
       return null;
     }
@@ -137,6 +134,38 @@ export class CreateCheckoutUseCase {
       expiresAt: null,
       type: 'INVOICE',
     };
+  }
+
+  private async markGatewaySubscriptionCanceled(
+    subscription: Subscription,
+    subscriptionRef: string,
+    now: Date,
+  ): Promise<void> {
+    let current: Subscription | null = subscription;
+
+    for (let attempt = 1; attempt <= SubscriptionRepository.MAX_WRITE_ATTEMPTS; attempt++) {
+      if (!current) {
+        return;
+      }
+
+      if (current.status !== Subscription.Status.CANCELED && current.gatewayRefs?.subscriptionId === subscriptionRef) {
+        current.status = Subscription.Status.CANCELED;
+        current.canceledAt = now;
+
+        if (!await this.subscriptionRepository.save(current)) {
+          current = await this.subscriptionRepository.findByAccountId(subscription.accountId);
+          continue;
+        }
+      }
+
+      if (Subscription.resolveEffectivePlan(current, now) === 'PRO') {
+        throw new SubscriptionAlreadyActive();
+      }
+
+      return;
+    }
+
+    throw new Error('Subscription write conflict.');
   }
 
   private assertCanBuyWithoutGatewaySubscription(

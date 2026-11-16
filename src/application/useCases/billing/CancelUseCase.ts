@@ -14,7 +14,7 @@ export class CancelUseCase {
   ) { }
 
   async execute({ accountId }: CancelUseCase.Input): Promise<CancelUseCase.Output> {
-    const subscription = await this.subscriptionRepository.findByAccountId(accountId);
+    let subscription = await this.subscriptionRepository.findByAccountId(accountId);
 
     if (!subscription) {
       throw new BadRequest('Subscription not found.');
@@ -24,26 +24,45 @@ export class CancelUseCase {
       return { status: subscription.status };
     }
 
-    if (subscription.status === Subscription.Status.TRIALING) {
-      subscription.status = Subscription.Status.CANCELED;
-      subscription.canceledAt = new Date();
-      subscription.paidUntil = undefined;
-    } else {
-      const subscriptionRef = subscription.gatewayRefs?.subscriptionId;
+    const isTrial = subscription.status === Subscription.Status.TRIALING;
+    const subscriptionRef = subscription.gatewayRefs?.subscriptionId;
 
+    if (!isTrial) {
       if (!subscriptionRef) {
         throw new BillingError('Subscription reference not found.');
       }
 
       await this.paymentGateway.cancelSubscription({ subscriptionRef });
+    }
+
+    for (let attempt = 1; attempt <= SubscriptionRepository.MAX_WRITE_ATTEMPTS; attempt++) {
+      if (!subscription) {
+        throw new BadRequest('Subscription not found.');
+      }
+
+      const isSameSubscription = isTrial
+        ? subscription.status === Subscription.Status.TRIALING
+        : subscription.gatewayRefs?.subscriptionId === subscriptionRef;
+
+      if (subscription.status === Subscription.Status.CANCELED || !isSameSubscription) {
+        return { status: subscription.status };
+      }
 
       subscription.status = Subscription.Status.CANCELED;
       subscription.canceledAt = new Date();
+
+      if (isTrial) {
+        subscription.paidUntil = undefined;
+      }
+
+      if (await this.subscriptionRepository.save(subscription)) {
+        return { status: subscription.status };
+      }
+
+      subscription = await this.subscriptionRepository.findByAccountId(accountId);
     }
 
-    await this.subscriptionRepository.save(subscription);
-
-    return { status: subscription.status };
+    throw new Error('Subscription write conflict.');
   }
 }
 

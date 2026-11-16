@@ -52,11 +52,13 @@ stateDiagram-v2
     PAST_DUE --> ACTIVE: pagamento confirmado
     ACTIVE --> CANCELED: cancelamento
     PAST_DUE --> CANCELED: cancelamento
+    ACTIVE --> CANCELED: estorno total ou chargeback
+    PAST_DUE --> CANCELED: estorno total ou chargeback
     CANCELED --> CANCELED: pagamento da mesma assinatura<br/>só estende o paidUntil
     CANCELED --> ACTIVE: novo checkout pago
 ```
 
-`PAYMENT_OVERDUE` e o cancelamento pelo webhook valem para qualquer status diferente de `CANCELED`, inclusive `TRIALING`.
+`PAYMENT_OVERDUE` e o cancelamento pelo webhook valem para qualquer status diferente de `CANCELED`, inclusive `TRIALING`. O estorno total e o chargeback descontam um ciclo do `paidUntil`; o anual com renovação adiantada que ainda vale continua `ACTIVE` ([detalhes](fluxos/billing.md#estorno-e-chargeback)).
 
 O status sozinho não diz se o usuário é Pro: `Subscription.resolveEffectivePlan` cruza o status com `trialEndsAt` e `paidUntil` (com 3 dias de carência). Detalhes em [billing](fluxos/billing.md#estados-da-assinatura).
 

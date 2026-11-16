@@ -16,6 +16,7 @@ const getPendingCheckoutPK = (accountId: string): string => `PENDING_CHECKOUT#${
 
 @Injectable()
 export class SubscriptionRepository {
+  static readonly MAX_WRITE_ATTEMPTS = 3;
 
   constructor(private readonly config: AppConfig) { }
 
@@ -26,6 +27,7 @@ export class SubscriptionRepository {
         PK: SubscriptionItem.getPK(accountId),
         SK: SubscriptionItem.getSK(accountId),
       },
+      ConsistentRead: true,
     });
 
     const { Item } = await dynamodbClient.send(command);
@@ -39,23 +41,54 @@ export class SubscriptionRepository {
     return SubscriptionItem.toEntity(subscriptionItem);
   }
 
-  async save(subscription: Subscription): Promise<void> {
-    const subscriptionItem = SubscriptionItem.fromEntity(subscription).getItem();
+  async save(subscription: Subscription): Promise<boolean> {
+    const nextVersion = (subscription.version ?? 0) + 1;
+    const subscriptionItem = {
+      ...SubscriptionItem.fromEntity(subscription).getItem(),
+      version: nextVersion,
+    };
 
     const command = new PutCommand({
       TableName: this.config.db.dynamodb.mainTable,
       Item: subscriptionItem,
+      ConditionExpression: subscription.version === undefined
+        ? 'attribute_exists(#PK) AND attribute_not_exists(#version)'
+        : 'attribute_exists(#PK) AND #version = :version',
+      ExpressionAttributeNames: {
+        '#PK': 'PK',
+        '#version': 'version',
+      },
+      ...(subscription.version !== undefined && {
+        ExpressionAttributeValues: {
+          ':version': subscription.version,
+        },
+      }),
     });
 
-    await dynamodbClient.send(command);
+    try {
+      await dynamodbClient.send(command);
+    } catch (error) {
+      if (error instanceof ConditionalCheckFailedException) {
+        return false;
+      }
+
+      throw error;
+    }
+
+    subscription.version = nextVersion;
+
+    return true;
   }
 
   async create(subscription: Subscription): Promise<void> {
-    const subscriptionItem = SubscriptionItem.fromEntity(subscription);
+    const subscriptionItem = {
+      ...SubscriptionItem.fromEntity(subscription).getItem(),
+      version: 1,
+    };
 
     const command = new PutCommand({
       TableName: this.config.db.dynamodb.mainTable,
-      Item: subscriptionItem.getItem(),
+      Item: subscriptionItem,
       ConditionExpression: 'attribute_not_exists(#SK)',
       ExpressionAttributeNames: {
         '#SK': 'SK',
@@ -63,6 +96,8 @@ export class SubscriptionRepository {
     });
 
     await dynamodbClient.send(command);
+
+    subscription.version = 1;
   }
 
   async linkGatewayRef({ gatewayId, accountId, planId }: SubscriptionRepository.LinkGatewayRefParams): Promise<void> {

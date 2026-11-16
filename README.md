@@ -29,7 +29,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
 - **Alarmes**: Notificação por email quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues) e quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min);
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
-- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade, reconciliação horária dos pagamentos confirmados (ativa o que o webhook não ativou e avisa por e-mail) e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s), além de `reservedConcurrency: 5` na função;
+- **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade (estorno total e chargeback descontam o ciclo pago e cancelam a mensal no Asaas, com alerta por e-mail), reconciliação horária dos pagamentos confirmados e estornados (ativa ou desconta o que o webhook não aplicou e avisa por e-mail) e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s), além de `reservedConcurrency: 5` na função;
 - **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
 
 ## Arquitetura
@@ -925,6 +925,9 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
   ```
 
 - IP fora da allowlist → `403 FORBIDDEN` (checado antes do rate limit e do token); acima de 120 req/min no mesmo IP → `429` com `Retry-After`; token inválido → `502 BILLING_ERROR`; evento desconhecido → `200` com `{"received": false}`; processamento é idempotente por `event.id` (dedup de 14 dias na RateLimitTable).
+- Eventos tratados (marcar no webhook do painel do Asaas, separado no sandbox e em produção): `PAYMENT_CREATED`, `PAYMENT_CONFIRMED`, `PAYMENT_RECEIVED`, `PAYMENT_OVERDUE`, `SUBSCRIPTION_DELETED` (e `SUBSCRIPTION_CANCELED`), `CHECKOUT_PAID`, `CHECKOUT_CANCELED`, `CHECKOUT_EXPIRED`, `PAYMENT_REFUNDED`, `PAYMENT_PARTIALLY_REFUNDED`, `PAYMENT_CHARGEBACK_REQUESTED`, `PAYMENT_CHARGEBACK_DISPUTE` e `PAYMENT_AWAITING_CHARGEBACK_REVERSAL`.
+- Estorno total (`PAYMENT_REFUNDED`) e chargeback aberto (`PAYMENT_CHARGEBACK_REQUESTED`) de um pagamento que gerou o ciclo atual descontam um ciclo do `paidUntil`, cancelam a mensal no Asaas e põem `CANCELED` quando o Pro acaba; estorno parcial e os demais eventos de chargeback só alertam. Todos publicam alerta no SNS. Regras em [billing](docs/guide/fluxos/billing.md#estorno-e-chargeback).
+- A assinatura é gravada com `version` (escrita condicional); webhook, cancelamento e checkout releem e reaplicam no conflito.
 
 ## Eventos
 
