@@ -92,7 +92,7 @@ Os atributos completos de cada entidade estão em [item collections](#item-colle
 | AP05 | Buscar meta | Tabela | `PK = ACCOUNT#<accountId>`, `SK = ACCOUNT#<accountId>#GOAL` | `GetItem` | `GoalRepository.findByAccountId` |
 | AP06 | Buscar assinatura | Tabela | `PK = ACCOUNT#<accountId>`, `SK = ACCOUNT#<accountId>#SUBSCRIPTION` | `GetItem` consistente | `SubscriptionRepository.findByAccountId` |
 | AP07 | Listar refeições do dia, da mais nova para a mais antiga | `GSI1` | `GSI1PK = MEAL#<accountId>#<AAAA-MM-DD>` + filtro `status = SUCCESS` | `Query`, `ScanIndexForward false` | `ListMealsByAccountIdAndDay` |
-| AP08 | Buscar refeição pelo id | Tabela | `PK = ACCOUNT#<accountId>MEAL#<mealId>`, `SK = MEAL#<mealId>` | `GetItem`. Consistente no polling, em remover e restaurar e na checagem de 15 min. Eventual em adicionar itens e excluir | `MealRepository.findById` |
+| AP08 | Buscar refeição pelo id | Tabela | `PK = ACCOUNT#<accountId>MEAL#<mealId>`, `SK = MEAL#<mealId>` | `GetItem`. Consistente no polling, em adicionar itens, remover e restaurar, excluir e na checagem de 15 min | `MealRepository.findById` |
 | AP09 | Buscar cadastro pendente | Tabela | `PK = SK = PENDING_SIGNUP#<accountId>` | `GetItem` consistente | `PendingSignUpRepository.findByAccountId` |
 | AP10 | Achar a conta de um ID do Asaas | Tabela | `PK = SK = GATEWAY#<checkoutId ou subscriptionId>` | `GetItem` | `SubscriptionRepository.findGatewayRef` |
 | AP13 | Último checkout aberto da conta | Tabela | `PK = SK = PENDING_CHECKOUT#<accountId>` | `GetItem` consistente | `SubscriptionRepository.findPendingCheckout` |
@@ -120,7 +120,7 @@ Quase toda escrita é condicional. A condição é o que garante a regra de neg�
 | AW11 | Devolver para a fila | `UpdateItem` | `PROCESSING` com o mesmo `leaseExpiresAt` | `markForRetry` |
 | AW12 | Gravar o resultado da IA | `UpdateItem` | `status = PROCESSING` | `markSuccess` |
 | AW13 | Rejeitar ou falhar **e estornar a cota** | `TransactWriteItems` nas duas tabelas, com `ClientRequestToken` | Rejeitar: `status = PROCESSING`. Falhar: status, `attempts` e lease lidos. Mais o contador `> 0`: se essa parte falhar, grava o status sem estorno (`quotaRefunded: false`) | `rejectAndRefund`, `failAndRefund` |
-| AW14 | Adicionar itens | `UpdateItem`, `list_append` | `SUCCESS`, menos de 5 adições, cabe nos 30 itens, dentro das 24 h | `appendFoods` |
+| AW14 | Adicionar itens | `UpdateItem`, `list_append` | `SUCCESS`, `foodsVersion` igual ao lido, menos de 5 adições, cabe nos 30 itens, dentro das 24 h | `appendFoods` |
 | AW15 | Remover ou restaurar item | `UpdateItem` | `SUCCESS` e `foodsVersion` igual ao lido | `saveFoods` |
 | AW16 | Excluir refeição | `UpdateItem` para `DELETED` | `status IN (SUCCESS, REJECTED, FAILED)` | `markDeleted` |
 | AW17 | Consumir cota ou rate limit | `UpdateItem`, `ADD count 1` | `count < limite` | `RateLimitRepository.increment`, `incrementQuotaCounter` |
@@ -307,7 +307,7 @@ Itens só com `count` e `expiresAt`, sem `type`.
 |---|---|
 | Bucket | `nacal-api-<stage>-meals-bucket` (`DeletionPolicy: Retain`, sobrevive a um `sls remove`) |
 | Chave | `<accountId>/<uuid>.<jpeg, m4a ou webm>` |
-| Metadados | `x-amz-meta-mealid` e `x-amz-meta-accountid`, obrigatórios no Presigned POST |
+| Metadados | `x-amz-meta-mealid` e `x-amz-meta-accountid`, com valor fixo no Presigned POST |
 | Leitura | Só pela CloudFront, com Origin Access Control |
 | Remoção | Quando a refeição é rejeitada, falha ou é excluída |
 

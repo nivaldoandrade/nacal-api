@@ -27,7 +27,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
-- **Alarmes**: Notificação por email (só em prod) quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues), quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min), quando o HTTP API responde `5xx` (3 em 5 min), quando o webhook do Asaas responde algo diferente de 2xx, quando uma refeição vira `FAILED` e quando a `processMeal` sofre throttling;
+- **Alarmes**: Notificação por email (só em prod) quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues), quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min), quando o HTTP API responde `5xx` (3 em 5 min), quando o webhook do Asaas responde algo diferente de 2xx, quando uma refeição vira `FAILED`, quando a `processMeal` sofre throttling e quando o trigger do S3 dá erro;
 - **Observabilidade**: logs JSON com uma linha por request (`routeKey`, `statusCode`, latência, erro), transições do processamento de refeições, `usage` de tokens de cada chamada à OpenAI, métricas EMF (`MealFailed`, `WebhookNon2xx`), access log do HTTP API, retenção de 30 dias e sourcemaps nas stacks de erro;
 - **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
 - **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade (estorno total e chargeback descontam o ciclo pago e cancelam a mensal no Asaas, com alerta por e-mail), reconciliação horária dos pagamentos confirmados e estornados (ativa ou desconta o que o webhook não aplicou e avisa por e-mail) e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s), além de `reservedConcurrency: 5` na função;
@@ -554,8 +554,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
     formData.append(key, value);
   });
 
-  // Adicionar metadata e arquivo
-  formData.append('X-Amz-meta-name', file.name);
+  // Adicionar o arquivo (os fields assinados vão sem alteração; o S3 recusa campo extra ou valor diferente)
   formData.append('file', file);
 
   // Upload direto para o S3
@@ -719,7 +718,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 - A chamada à OpenAI é **síncrona** (GPT-5.4-mini, prompt `getAddItemsPrompt`, Lambda com `timeout: 29`). A IA recebe os itens já registrados em `<registered_items>` e o texto em `<user_note>` (com `<`/`>` neutralizados, tratados como dado) e devolve só os itens novos. Itens já registrados não são duplicados, exceto quando o usuário pede uma porção extra ("mais um arroz"), que entra como uma linha nova.
 - Calorias calculadas no backend (`carbs*4 + prot*4 + fat*9`); os itens novos entram com `source: "ADDED"`.
 - **Não consome cota**, mas responde `403 FREE_QUOTA_EXCEEDED` se o usuário Free já não tem cota no mês (checado antes da IA). O limite diário do Pro não bloqueia.
-- Limites: até **5 adições por refeição**, só **até 24h** depois de `createdAt` e no máximo **30 itens**. O append é condicional no DynamoDB (status, janela, adições e itens), então requests concorrentes não furam os limites. Itens que a IA devolveu e não couberam são descartados e contados em `skippedFoodsCount`.
+- Limites: até **5 adições por refeição**, só **até 24h** depois de `createdAt` e no máximo **30 itens**. O append é condicional no DynamoDB (status, `foodsVersion`, janela, adições e itens), com leitura consistente: requests concorrentes não furam os limites nem repetem o `order`, e quem perde a corrida regrava com o `order` recalculado, sem nova chamada à IA (até 3 tentativas, depois `500`). Itens que a IA devolveu e não couberam são descartados e contados em `skippedFoodsCount`.
 
 - Resposta esperada:
   ```json
@@ -1002,6 +1001,7 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 
 ### SQS
 
+- **Trigger do S3** (`newMealUploadedTrigger`): relança o erro quando algum registro falha, para o S3 repetir o evento (até 2 vezes); alarme de erros por email (SNS, `NewMealUploadedTriggerErrorsAlarm`)
 - **MealsQueue**: Fila para processamento assíncrono de refeições, com alarme por email (SNS) quando a mensagem mais antiga passa de 2 min (`MealsQueueAgeAlarm`)
 - **MealsDLQ**: Dead Letter Queue com alarme por email (SNS)
 - Os consumidores (`processMeal`, lote de 2, e `checkMealUpload`, lote de 10) usam `ReportBatchItemFailures`: só a mensagem que falhou volta para a fila
@@ -1024,7 +1024,7 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 ### CloudWatch
 
 - Log groups de todas as Lambdas com retenção de 30 dias (`provider.logRetentionInDays`)
-- Alarmes (`sls/resources/observabilityAlarms.yml`, ligados só em prod, email via SNS): `HttpApi5xxAlarm` (3+ respostas `5xx` em 5 min), `AsaasWebhookNon2xxAlarm` (métrica EMF `WebhookNon2xx`), `MealFailedAlarm` (métrica EMF `MealFailed`) e `ProcessMealThrottlesAlarm`, além dos alarmes das filas e da reconciliação. O que fazer com cada um: [runbook de alertas](docs/guide/runbooks/alertas.md)
+- Alarmes (`sls/resources/observabilityAlarms.yml`, ligados só em prod, email via SNS): `HttpApi5xxAlarm` (3+ respostas `5xx` em 5 min), `AsaasWebhookNon2xxAlarm` (métrica EMF `WebhookNon2xx`), `MealFailedAlarm` (métrica EMF `MealFailed`), `NewMealUploadedTriggerErrorsAlarm` (erros do trigger do S3) e `ProcessMealThrottlesAlarm`, além dos alarmes das filas e da reconciliação. O que fazer com cada um: [runbook de alertas](docs/guide/runbooks/alertas.md)
 
 ## Variáveis de Ambiente
 

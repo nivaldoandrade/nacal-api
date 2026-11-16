@@ -163,7 +163,7 @@ flowchart TD
 2. O `CreateMealUseCase` descobre o plano efetivo (`Subscription.resolveEffectivePlan`) e **consome a cota** no `MealQuotaService` com um incremento condicional na `RateLimitTable`:
    - **Free**: contador mensal `RL#account-monthly#<accountId>` / `AAAA-MM`, limite 20.
    - **Pro**: contador diário no fuso de São Paulo, limite 20, mais um contador mensal com sufixo `#PRO` (sem limite, só para contar).
-3. Gera a chave do arquivo (`<accountId>/<uuid>.<ext>`) e o **Presigned POST**, que só aceita aquele `Content-Type`, **exatamente** aquele `fileSize` e aquela chave. Os campos `x-amz-meta-mealid` e `x-amz-meta-accountid` são obrigatórios, mas a condição é `starts-with ''`: **o valor não é fixado**, e o trigger confia nele. Expira em 5 minutos.
+3. Gera a chave do arquivo (`<accountId>/<uuid>.<ext>`) e o **Presigned POST**, que só aceita aquele `Content-Type`, **exatamente** aquele `fileSize` e aquela chave. Os campos `x-amz-meta-mealid` e `x-amz-meta-accountid` também têm **valor fixo** (condição exata): quem tem a autorização não consegue apontar o upload para a refeição de outra conta. Expira em 5 minutos.
 4. Publica na `MealUploadCheckQueue` com `DelaySeconds: 900`. É a rede de segurança da [refeição presa](#refeição-presa-checagem-de-15-min).
 5. Grava a refeição com `status: UPLOADING`, guardando `quotaMonth` e `quotaDay` para saber o que estornar depois.
 6. Se qualquer passo de 3 a 5 falhar, a cota é estornada e a resposta é `500`.
@@ -174,10 +174,11 @@ Resposta `201`: `{ mealId, uploadSignature }`. O `uploadSignature` é o Presigne
 
 1. O app faz um `POST` multipart para o S3 com os campos do `uploadSignature` e o arquivo.
 2. O S3 dispara `ObjectCreated`. A Lambda lê os metadados com `HeadObject`, porque a chave do arquivo não carrega o `mealId`.
-3. `markQueued`: muda para `QUEUED` **só se** o status for `UPLOADING` ou `QUEUED`. Se a refeição já seguiu adiante, não faz nada.
-4. Publica `{ accountId, mealId }` na `MealsQueue`.
+3. Se a refeição não existe (por exemplo, a criação falhou depois de gerar o Presigned POST) ou o arquivo não é o `inputFileKey` dela, só registra um `warn` e termina, sem enfileirar.
+4. `markQueued`: muda para `QUEUED` **só se** o status for `UPLOADING` ou `QUEUED`. Se a refeição já seguiu adiante, não faz nada.
+5. Publica `{ accountId, mealId }` na `MealsQueue`.
 
-Erros aqui só vão para o log (o adapter de S3 não lança). Se a publicação falhar, a refeição fica em `QUEUED` com `attempts = 0`, e a checagem de 15 minutos marca `FAILED` e estorna. Ela não reprocessa.
+**Falhas são relançadas.** Se o `HeadObject`, o `markQueued` ou a publicação falharem, o adapter de S3 registra `s3 event failed` e lança o erro. A invocação do S3 é assíncrona, então o Lambda repete o evento até 2 vezes (cerca de 1 e 2 minutos depois). Repetir é seguro: `markQueued` devolve `true` tanto em `UPLOADING` quanto em `QUEUED`, então a nova tentativa publica de novo. Uma mensagem duplicada costuma ser ignorada pelo `claimForProcessing`; no caso raro de a primeira publicação ter chegado à fila (timeout do SDK com a mensagem entregue) e a primeira tentativa de processamento ter devolvido a refeição para `QUEUED`, a duplicada pode gastar uma das 2 tentativas. Se as 3 tentativas falharem, o evento se perde (não há fila de falhas, e a `MealsDLQ` só recebe mensagens que já estavam na `MealsQueue`). O `NewMealUploadedTriggerErrorsAlarm` avisa, e a refeição é recuperada pela checagem de 15 minutos: fica em `UPLOADING` ou em `QUEUED` com `attempts = 0`, é marcada `FAILED` e estornada. Ela não reprocessa.
 
 ### 3. Processamento (`processMeal`)
 
@@ -274,7 +275,7 @@ flowchart TD
 
 Quando ela atua:
 
-- **`UPLOADING`**: o app nunca mandou o arquivo (fechou, perdeu a rede ou o Presigned POST expirou) ou o evento do S3 falhou.
+- **`UPLOADING`**: o app nunca mandou o arquivo (fechou, perdeu a rede ou o Presigned POST expirou) ou o evento do S3 falhou nas 3 tentativas.
 - **`QUEUED` com `attempts = 0`**: o arquivo chegou, mas a publicação na `MealsQueue` falhou, ou a fila está atrasada há mais de 10 minutos (o alarme `MealsQueueAgeAlarm` avisa bem antes, quando a mensagem mais antiga passa de 2 minutos).
 
 A escrita é condicional ao status lido, então um upload que termina no último segundo **não** é estornado por engano.
@@ -289,6 +290,7 @@ A escrita é condicional ao status lido, então um upload que termina no último
 | Corpo inválido (tipo, tamanho, `description` em áudio) | `400 VALIDATION` | Não consome |
 | Falha ao gerar o upload, publicar ou gravar | `500` | Estornada na hora |
 | Arquivo de tamanho diferente do declarado | O S3 recusa o upload, a refeição fica `UPLOADING` | Estornada em 15 min |
+| Metadado (`mealid`, `accountid`) diferente do assinado | O S3 recusa o upload (`403`), a refeição fica `UPLOADING` | Estornada em 15 min |
 | Arquivo corrompido ou de outro formato | `REJECTED` / `INVALID_FILE` | Estornada |
 | Foto sem comida | `REJECTED` / `NOT_A_MEAL` (com `gateScore`) | Estornada |
 | Áudio sem fala ou sem alimento | `REJECTED` / `NO_FOOD_DETECTED` | Estornada |

@@ -34,7 +34,7 @@ stateDiagram-v2
 | `PROCESSING` → `SUCCESS` / `REJECTED` | `processMeal` | status é `PROCESSING` |
 | `PROCESSING` → `QUEUED` | `processMeal` | `PROCESSING` com o mesmo `leaseExpiresAt` |
 | `*` → `FAILED` | `processMeal` ou `checkMealUpload` (só `UPLOADING`, ou `QUEUED` com `attempts = 0`) | o status, o `attempts` e o lease lidos, numa transação com o estorno |
-| `SUCCESS` → `SUCCESS` (adicionar itens) | `addMealItems` | `SUCCESS`, menos de 5 adições, cabe nos 30 itens e dentro das 24 h (sem `foodsVersion`) |
+| `SUCCESS` → `SUCCESS` (adicionar itens) | `addMealItems` | `SUCCESS`, menos de 5 adições, cabe nos 30 itens, dentro das 24 h e `foodsVersion` igual ao lido |
 | `SUCCESS` → `SUCCESS` (remover ou restaurar) | `removeMealItem`, `restoreMealItem` | `SUCCESS` e `foodsVersion` igual ao lido |
 | `*` → `DELETED` | `deleteMeal` | status é `SUCCESS`, `REJECTED` ou `FAILED` |
 

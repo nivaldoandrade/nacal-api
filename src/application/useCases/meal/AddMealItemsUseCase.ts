@@ -14,6 +14,8 @@ import { Injectable } from '@kernel/decorators/Injectable';
 @Injectable()
 export class AddMealItemsUseCase {
 
+  private static readonly MAX_APPEND_ATTEMPTS = 3;
+
   constructor(
     private readonly mealRepository: MealRepository,
     private readonly mealAiGateway: MealAiGateway,
@@ -23,21 +25,9 @@ export class AddMealItemsUseCase {
   ) { }
 
   async execute({ accountId, mealId, text }: AddMealItemsUseCase.Input): Promise<AddMealItemsUseCase.Output> {
-    const meal = await this.mealRepository.findActiveById({ accountId, mealId });
-
-    if (!meal) {
-      throw new ResourceNotFound('Meal not found.');
-    }
-
     const now = new Date();
 
-    if (!meal.isEditable(now)) {
-      throw new MealNotEditable();
-    }
-
-    if (meal.hasReachedItemLimit()) {
-      throw new MealItemLimitReached();
-    }
+    let meal = await this.findAddableMeal({ accountId, mealId, now });
 
     await this.ensureQuotaAvailable(accountId);
 
@@ -47,32 +37,62 @@ export class AddMealItemsUseCase {
       existingFoods: meal.foods,
     });
 
-    const remainingSlots = Meal.MAX_FOODS - meal.foods.length;
-    const firstOrder = meal.nextFoodOrder();
-    const newFoods: Meal.FoodType[] = foods
-      .slice(0, remainingSlots)
-      .map((food, index) => Meal.createFood(food, Meal.FoodSource.ADDED, firstOrder + index));
+    for (let attempt = 1; attempt <= AddMealItemsUseCase.MAX_APPEND_ATTEMPTS; attempt++) {
+      const remainingSlots = Meal.MAX_FOODS - meal.foods.length;
+      const firstOrder = meal.nextFoodOrder();
+      const newFoods: Meal.FoodType[] = foods
+        .slice(0, remainingSlots)
+        .map((food, index) => Meal.createFood(food, Meal.FoodSource.ADDED, firstOrder + index));
 
-    if (newFoods.length === 0) {
-      throw new NoFoodIdentified();
+      if (newFoods.length === 0) {
+        throw new NoFoodIdentified();
+      }
+
+      const updatedMeal = await this.mealRepository.appendFoods({
+        meal,
+        foods: newFoods,
+        now,
+      });
+
+      if (updatedMeal) {
+        return {
+          meal: this.mealPresenter.toOutput(updatedMeal),
+          addedFoods: newFoods,
+          skippedFoodsCount: foods.length - newFoods.length,
+          unidentifiedFoodsCount: unidentifiedCount,
+        };
+      }
+
+      meal = await this.findAddableMeal({ accountId, mealId, now });
     }
 
-    const updatedMeal = await this.mealRepository.appendFoods({
-      meal,
-      foods: newFoods,
-      now,
+    throw new Error(`Could not append foods to meal ${mealId} after concurrent edits.`);
+  }
+
+  private async findAddableMeal({
+    accountId,
+    mealId,
+    now,
+  }: AddMealItemsUseCase.FindAddableMealParams): Promise<Meal> {
+    const meal = await this.mealRepository.findActiveById({
+      accountId,
+      mealId,
+      consistentRead: true,
     });
 
-    if (!updatedMeal) {
-      throw await this.resolveAppendFailure({ accountId, mealId, now });
+    if (!meal) {
+      throw new ResourceNotFound('Meal not found.');
     }
 
-    return {
-      meal: this.mealPresenter.toOutput(updatedMeal),
-      addedFoods: newFoods,
-      skippedFoodsCount: foods.length - newFoods.length,
-      unidentifiedFoodsCount: unidentifiedCount,
-    };
+    if (!meal.isEditable(now)) {
+      throw new MealNotEditable();
+    }
+
+    if (meal.hasReachedItemLimit()) {
+      throw new MealItemLimitReached();
+    }
+
+    return meal;
   }
 
   private async ensureQuotaAvailable(accountId: string): Promise<void> {
@@ -80,24 +100,6 @@ export class AddMealItemsUseCase {
     const plan = Subscription.resolveEffectivePlan(subscription);
 
     await this.mealQuotaService.ensureCanAddItems({ accountId, plan });
-  }
-
-  private async resolveAppendFailure({
-    accountId,
-    mealId,
-    now,
-  }: AddMealItemsUseCase.ResolveAppendFailureParams): Promise<Error> {
-    const currentMeal = await this.mealRepository.findActiveById({ accountId, mealId });
-
-    if (!currentMeal) {
-      return new ResourceNotFound('Meal not found.');
-    }
-
-    if (!currentMeal.isEditable(now)) {
-      return new MealNotEditable();
-    }
-
-    return new MealItemLimitReached();
   }
 }
 
@@ -115,7 +117,7 @@ export namespace AddMealItemsUseCase {
     unidentifiedFoodsCount: number;
   }
 
-  export type ResolveAppendFailureParams = {
+  export type FindAddableMealParams = {
     accountId: string;
     mealId: string;
     now: Date;

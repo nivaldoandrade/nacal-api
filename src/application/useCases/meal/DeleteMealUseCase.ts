@@ -14,7 +14,11 @@ export class DeleteMealUseCase {
   ) { }
 
   async execute({ accountId, mealId }: DeleteMealUseCase.Input): Promise<void> {
-    const meal = await this.mealRepository.findActiveById({ accountId, mealId });
+    const meal = await this.mealRepository.findActiveById({
+      accountId,
+      mealId,
+      consistentRead: true,
+    });
 
     if (!meal) {
       throw new ResourceNotFound('Meal not found.');
@@ -27,7 +31,11 @@ export class DeleteMealUseCase {
     const deleted = await this.mealRepository.markDeleted({ meal, now: new Date() });
 
     if (!deleted) {
-      const currentMeal = await this.mealRepository.findActiveById({ accountId, mealId });
+      const currentMeal = await this.mealRepository.findActiveById({
+        accountId,
+        mealId,
+        consistentRead: true,
+      });
 
       if (!currentMeal) {
         throw new ResourceNotFound('Meal not found.');

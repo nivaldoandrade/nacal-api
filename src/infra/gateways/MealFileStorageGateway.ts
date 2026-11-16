@@ -107,8 +107,8 @@ export class MealFileStorageGateway {
         {
           'Content-Type': mimeType,
         },
-        ['starts-with', '$x-amz-meta-mealid', ''],
-        ['starts-with', '$x-amz-meta-accountid', ''],
+        { 'x-amz-meta-mealid': mealId },
+        { 'x-amz-meta-accountid': accountId },
         ['content-length-range', fileSize, fileSize],
       ],
       Fields: {

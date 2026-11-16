@@ -1,8 +1,8 @@
-import { ResourceNotFound } from '@application/errors/application/ResourceNotFound';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { MealQueueGateway } from '@infra/gateways/MealQueueGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
+import { logger } from '@shared/logger/logger';
 
 @Injectable()
 export class MealUploadedUseCase {
@@ -16,10 +16,23 @@ export class MealUploadedUseCase {
   async execute({ fileKey }: MealUploadedUseCase.Input): Promise<void> {
     const { mealId, accountId } = await this.mealFileStorageGateway.getMetadata(fileKey);
 
-    const meal = await this.mealRepository.findById({ mealId, accountId });
+    const meal = await this.mealRepository.findById({ mealId, accountId, consistentRead: true });
 
     if (!meal) {
-      throw new ResourceNotFound('Meal not found.');
+      logger.warn('uploaded file has no meal', { fileKey, mealId, accountId });
+
+      return;
+    }
+
+    if (meal.inputFileKey !== fileKey) {
+      logger.warn('uploaded file does not match meal input file', {
+        fileKey,
+        mealId,
+        accountId,
+        inputFileKey: meal.inputFileKey,
+      });
+
+      return;
     }
 
     const queued = await this.mealRepository.markQueued({ accountId, mealId });

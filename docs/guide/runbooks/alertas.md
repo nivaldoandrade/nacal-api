@@ -152,6 +152,7 @@ Só ligados em prod. O assunto é `ALARM: "nacal-api-prod-<alarme>" in South Ame
 | `HttpApi5xxAlarm` | 3 ou mais respostas `5xx` do HTTP API em 5 min | Ver [abaixo](#httpapi5xxalarm) |
 | `AsaasWebhookNon2xxAlarm` | O webhook do Asaas respondeu algo diferente de 2xx | Ver [abaixo](#asaaswebhooknon2xxalarm) |
 | `MealFailedAlarm` | Uma ou mais refeições viraram `FAILED` em 15 min | Ver [abaixo](#mealfailedalarm) |
+| `NewMealUploadedTriggerErrorsAlarm` | A Lambda que enfileira o upload da refeição deu erro | Ver [abaixo](#newmealuploadedtriggererrorsalarm) |
 | `ProcessMealThrottlesAlarm` | A `processMeal` foi recusada por limite de concorrência | Ver [abaixo](#processmealthrottlesalarm) |
 
 Para ver os logs:
@@ -249,6 +250,22 @@ Exemplo: 3 `MealFailed` com `source: attemptsExhausted` e `error.message` "[OPEN
 A Lambda `processMeal` foi recusada por falta de concorrência (métrica `Throttles`). As mensagens ficam na fila e são reentregues, então nada se perde de imediato, mas a refeição atrasa e o `MealsQueueAgeAlarm` deve vir junto.
 
 O que fazer: ver a concorrência da conta (`aws lambda get-account-settings`, a cota de prod é 1000) e se alguma função está consumindo tudo (métrica `ConcurrentExecutions` por função no CloudWatch). Se for rajada de refeições, considerar `maximumConcurrency` no evento SQS da `processMeal` (P17).
+
+### NewMealUploadedTriggerErrorsAlarm
+
+A `newMealUploadedTrigger` (evento `ObjectCreated` do S3) deu erro. Ela lê os metadados do arquivo, marca a refeição como `QUEUED` e publica na `MealsQueue`. O S3 repete o evento até 2 vezes (cerca de 1 e 2 minutos depois), então uma falha passageira costuma se resolver sozinha, mas a métrica `Errors` conta cada tentativa que falhou. Se as 3 falharem, o evento se perde: não há fila de falhas, e a refeição fica em `UPLOADING` (ou em `QUEUED` sem mensagem) até a checagem de 15 min marcar `FAILED` e estornar a cota. O `MealFailedAlarm` (`source: uploadStalled`) vem depois.
+
+Consulta no log group `/aws/lambda/nacal-api-prod-newMealUploadedTrigger`:
+
+```text
+fields @timestamp, fileKey, error.name, error.message
+| filter message = "s3 event failed"
+| sort @timestamp desc
+```
+
+O `fileKey` tem o formato `<accountId>/<uuid>.<ext>`. Causas possíveis: arquivo inexistente no `HeadObject` (aparece como `error.name: Unknown`, porque o `HEAD` não traz corpo de erro; não é esperado, já que a exclusão da refeição só acontece depois do processamento, então confira se alguém apagou o objeto à mão), `Cannot get metadata file` (objeto sem os metadados `mealid` e `accountid`, que não vem do app) e erro do DynamoDB ou do SQS (ver o status da AWS e o `error.message`). Refeição inexistente ou arquivo diferente do `inputFileKey` não dão erro: aparecem como `warn` (`uploaded file has no meal`, `uploaded file does not match meal input file`).
+
+Exemplo: `ALARM: "nacal-api-prod-NewMealUploadedTriggerErrorsAlarm"` e três linhas `s3 event failed` com `ThrottlingException` do DynamoDB: a tabela estava limitada; o evento foi repetido e as refeições seguiram. Uma falha única que não se repete nas tentativas seguintes costuma ser passageira e não pede ação; 3 linhas para o mesmo `fileKey` pedem investigação, porque a refeição vai virar `FAILED` e ser estornada.
 
 ## GuardDuty
 

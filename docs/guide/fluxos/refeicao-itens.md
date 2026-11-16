@@ -64,7 +64,7 @@ sequenceDiagram
     participant AI as OpenAI
 
     U->>L: POST /meals/{id}/items com text
-    L->>DB: busca a refeição
+    L->>DB: GetItem com ConsistentRead
     alt não existe, fora da janela ou no limite
         L-->>U: 404, 409 MEAL_NOT_EDITABLE ou 409 MEAL_ITEM_LIMIT_REACHED
     end
@@ -79,10 +79,10 @@ sequenceDiagram
         L-->>U: 422 NO_FOOD_IDENTIFIED
     end
     L->>DB: appendFoods condicional
-    Note over DB: SUCCESS, itemAdditions menor que 5,<br/>cabe nos 30 e createdAt dentro das 24 h
+    Note over DB: SUCCESS, foodsVersion igual ao lido,<br/>itemAdditions menor que 5,<br/>cabe nos 30 e createdAt dentro das 24 h
     alt condição falhou
-        L->>DB: relê para descobrir o motivo
-        L-->>U: 404 ou 409
+        L->>DB: relê com ConsistentRead e valida de novo
+        L-->>U: 404 ou 409, ou grava de novo com o order recalculado
     end
     L-->>U: 200 com meal, addedFoods, skippedFoodsCount e unidentifiedFoodsCount
 ```
@@ -92,7 +92,7 @@ sequenceDiagram
 - **Adicionar itens não consome cota.** O Free só precisa ter saldo, para quem esgotou a cota não usar a IA de graça por esse caminho.
 - `skippedFoodsCount` diz quantos alimentos a IA achou mas não couberam no limite de 30.
 - Os itens novos levam `source: ADDED` e continuam a numeração de `order` depois do maior existente, inclusive dos removidos.
-- **Duas adições ao mesmo tempo podem repetir o `order`.** A leitura que calcula o próximo `order` não é consistente, e o `appendFoods` não confere o `foodsVersion`.
+- **Duas adições ao mesmo tempo não repetem o `order`.** A leitura é consistente e o `appendFoods` confere o `foodsVersion` lido (com `attribute_not_exists` para refeição antiga, como no `saveFoods`). Se outra edição gravou no meio da chamada à IA, o `appendFoods` falha: o use case relê a refeição, valida de novo (`404`, `409 MEAL_NOT_EDITABLE` ou `409 MEAL_ITEM_LIMIT_REACHED`), recalcula `order` e o espaço que sobra e grava de novo, **sem repetir a chamada à IA** (a resposta já foi paga). São até 3 gravações; se todas perderem a corrida, a resposta é `500`. A IA viu a refeição como estava antes da outra adição, então uma adição simultânea do mesmo item pode duplicá-lo.
 
 ## Remover e restaurar itens
 
@@ -125,7 +125,7 @@ flowchart TD
 
 A exclusão é lógica: o item fica na tabela com `status: DELETED` e some das consultas. **A cota não volta**: a IA já foi usada.
 
-Adicionar itens e excluir leem a refeição **sem** `ConsistentRead`. Logo depois do `SUCCESS`, ainda podem ver `PROCESSING` e responder `409`.
+A leitura é consistente, então a exclusão logo depois do `SUCCESS` não vê o `PROCESSING` antigo nem responde `409` por isso.
 
 ## Erros
 

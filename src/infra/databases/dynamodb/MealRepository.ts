@@ -167,6 +167,7 @@ export class MealRepository {
       ].join(' '),
       ConditionExpression: [
         '#status = :success',
+        MealRepository.getFoodsVersionCondition(meal.foodsVersion),
         '(attribute_not_exists(#itemAdditions) OR #itemAdditions < :maxAdditions)',
         '(attribute_not_exists(#foods) OR size(#foods) <= :maxFoodsBefore)',
         '#createdAt >= :windowStart',
@@ -186,6 +187,7 @@ export class MealRepository {
         ':zero': 0,
         ':one': 1,
         ':now': now.toISOString(),
+        ':expectedVersion': meal.foodsVersion,
         ':maxAdditions': Meal.MAX_ITEM_ADDITIONS,
         ':maxFoodsBefore': Meal.MAX_FOODS - foods.length,
         ':windowStart': new Date(now.getTime() - (Meal.EDIT_WINDOW_HOURS * 60 * 60 * 1000)).toISOString(),
@@ -214,13 +216,10 @@ export class MealRepository {
       ':expectedVersion': expectedVersion,
       ':nextVersion': expectedVersion + 1,
     };
-    const conditions = ['#status = :success'];
-
-    if (expectedVersion === 0) {
-      conditions.push('(attribute_not_exists(#foodsVersion) OR #foodsVersion = :expectedVersion)');
-    } else {
-      conditions.push('#foodsVersion = :expectedVersion');
-    }
+    const conditions = [
+      '#status = :success',
+      MealRepository.getFoodsVersionCondition(expectedVersion),
+    ];
 
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.mainTable,
@@ -686,6 +685,14 @@ export class MealRepository {
     Meal.StatusType.QUEUED,
     Meal.StatusType.PROCESSING,
   ];
+
+  private static getFoodsVersionCondition(expectedVersion: number): string {
+    if (expectedVersion === 0) {
+      return '(attribute_not_exists(#foodsVersion) OR #foodsVersion = :expectedVersion)';
+    }
+
+    return '#foodsVersion = :expectedVersion';
+  }
 
   private static getKey({ accountId, mealId }: MealRepository.KeyParams): MealRepository.Key {
     return {
