@@ -1,9 +1,14 @@
 me:
   handler: src/main/functions/account/me.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /me
         method: get
         authorizer:
           name: CognitoAuthorizer
-

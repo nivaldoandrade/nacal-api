@@ -1,5 +1,15 @@
 signUp:
   handler: src/main/functions/auth/signUp.handler
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.cognitoAdminGetUser}
+        - ${self:custom.iam.cognitoAdminDeleteUser}
   events:
     - httpApi:
         path: /auth/sign-up
@@ -7,6 +17,13 @@ signUp:
 
 signIn:
   handler: src/main/functions/auth/signIn.handler
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.cognitoAdminGetUser}
   events:
     - httpApi:
         path: /auth/sign-in
@@ -14,6 +31,16 @@ signIn:
 
 confirmSignUp:
   handler: src/main/functions/auth/confirmSignUp.handler
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.cognitoAdminGetUser}
+        - ${self:custom.iam.cognitoAdminSetUserPassword}
   events:
     - httpApi:
         path: /auth/confirm-sign-up
@@ -21,6 +48,13 @@ confirmSignUp:
 
 resendConfirmationCode:
   handler: src/main/functions/auth/resendConfirmationCode.handler
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.cognitoAdminGetUser}
   events:
     - httpApi:
         path: /auth/resend-confirmation-code
@@ -28,6 +62,12 @@ resendConfirmationCode:
 
 refreshToken:
   handler: src/main/functions/auth/refreshToken.handler
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /auth/refresh-token
@@ -35,6 +75,13 @@ refreshToken:
 
 forgotPassword:
   handler: src/main/functions/auth/forgotPassword.handler
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.cognitoAdminGetUser}
   events:
     - httpApi:
         path: /auth/forgot-password
@@ -42,6 +89,13 @@ forgotPassword:
 
 confirmationForgotPassword:
   handler: src/main/functions/auth/confirmationForgotPassword.handler
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.cognitoAdminGetUser}
   events:
     - httpApi:
         path: /auth/confirmation-forgot-password
@@ -50,6 +104,14 @@ confirmationForgotPassword:
 oauthCallback:
   handler: src/main/functions/auth/oauthCallback.handler
   timeout: 15
+  environment:
+    COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /auth/oauth/callback
@@ -57,6 +119,12 @@ oauthCallback:
 
 completeOnboarding:
   handler: src/main/functions/auth/completeOnboarding.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /auth/complete-onboarding
@@ -64,6 +132,10 @@ completeOnboarding:
 
 preSignUpTrigger:
   handler: src/main/functions/auth/preSignUpTrigger.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.cognitoFederatedSignUp}
   events:
     - cognitoUserPool:
         pool: ${self:custom.cognito.UserPoolName}

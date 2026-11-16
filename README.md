@@ -1056,13 +1056,15 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 | `GOOGLE_CLIENT_ID`          | Client ID do provider Google no Cognito                 | Sim (login Google) |
 | `GOOGLE_CLIENT_SECRET`      | Client secret do provider Google no Cognito             | Sim (login Google) |
 
+Os segredos (`OPENAI_API_KEY`, `CLOUDFLARE_AI_API_TOKEN`, `ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN` e o `COGNITO_CLIENT_SECRET` abaixo) vão só para as funções que os usam, pelo `environment` de cada função em `sls/functions/`. As demais variáveis vão para todas, por `sls/config/env.yml`. Cada função também tem o próprio papel IAM. Quem recebe cada segredo e como adicionar permissão: [Operação](docs/guide/06-operacao.md#permissões-e-segredos-por-função).
+
 ### Runtime (auto-injetadas pelo Serverless)
 
 | Variável                | Fonte                                 |
 | ----------------------- | ------------------------------------- |
 | `COGNITO_CLIENT_ID`     | `!Ref UserPoolClient`                 |
 | `COGNITO_USER_POOL_ID`  | `!Ref UserPool`                       |
-| `COGNITO_CLIENT_SECRET` | `!GetAtt UserPoolClient.ClientSecret` |
+| `COGNITO_CLIENT_SECRET` | `!GetAtt UserPoolClient.ClientSecret`, só nas funções de auth que usam o secret |
 | `MAIN_TABLE_NAME`       | `!Ref MainTable`                      |
 | `RATE_LIMIT_TABLE_NAME` | `!Ref RateLimitTable`                 |
 | `MEALS_BUCKET_NAME`     | `!Ref MealsBucket`                    |

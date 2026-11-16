@@ -1,0 +1,90 @@
+mainTableRead:
+  Effect: Allow
+  Action:
+    - dynamodb:GetItem
+    - dynamodb:Query
+  Resource:
+    - !GetAtt MainTable.Arn
+    - !Sub "${MainTable.Arn}/index/*"
+
+mainTableWrite:
+  Effect: Allow
+  Action:
+    - dynamodb:PutItem
+    - dynamodb:UpdateItem
+    - dynamodb:DeleteItem
+    - dynamodb:TransactWriteItems
+  Resource: !GetAtt MainTable.Arn
+
+rateLimitTable:
+  Effect: Allow
+  Action:
+    - dynamodb:PutItem
+    - dynamodb:GetItem
+    - dynamodb:UpdateItem
+    - dynamodb:TransactWriteItems
+  Resource: !GetAtt RateLimitTable.Arn
+
+cognitoAdminGetUser:
+  Effect: Allow
+  Action:
+    - cognito-idp:AdminGetUser
+  Resource: !GetAtt UserPool.Arn
+
+cognitoAdminDeleteUser:
+  Effect: Allow
+  Action:
+    - cognito-idp:AdminDeleteUser
+  Resource: !GetAtt UserPool.Arn
+
+cognitoAdminSetUserPassword:
+  Effect: Allow
+  Action:
+    - cognito-idp:AdminSetUserPassword
+  Resource: !GetAtt UserPool.Arn
+
+cognitoFederatedSignUp:
+  Effect: Allow
+  Action:
+    - cognito-idp:ListUsers
+    - cognito-idp:AdminCreateUser
+    - cognito-idp:AdminLinkProviderForUser
+    - cognito-idp:AdminSetUserPassword
+    - cognito-idp:AdminUpdateUserAttributes
+  Resource: !GetAtt UserPool.Arn
+
+mealsBucketPut:
+  Effect: Allow
+  Action:
+    - s3:PutObject
+  Resource: !Sub "${MealsBucket.Arn}/*"
+
+mealsBucketGet:
+  Effect: Allow
+  Action:
+    - s3:GetObject
+  Resource: !Sub "${MealsBucket.Arn}/*"
+
+mealsBucketDelete:
+  Effect: Allow
+  Action:
+    - s3:DeleteObject
+  Resource: !Sub "${MealsBucket.Arn}/*"
+
+mealsQueueSend:
+  Effect: Allow
+  Action:
+    - sqs:SendMessage
+  Resource: !GetAtt MealsQueue.Arn
+
+mealUploadCheckQueueSend:
+  Effect: Allow
+  Action:
+    - sqs:SendMessage
+  Resource: !GetAtt MealUploadCheckQueue.Arn
+
+alertTopicPublish:
+  Effect: Allow
+  Action:
+    - sns:Publish
+  Resource: !Ref DQLAlarmTopic

@@ -1,5 +1,13 @@
 createMeal:
   handler: src/main/functions/meal/createMeal.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.mealsBucketPut}
+        - ${self:custom.iam.mealUploadCheckQueueSend}
   events:
     - httpApi:
         path: /create-meal
@@ -8,6 +16,10 @@ createMeal:
           name: CognitoAuthorizer
 listMeal:
   handler: src/main/functions/meal/listMeal.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
   events:
     - httpApi:
         path: /meals
@@ -16,6 +28,10 @@ listMeal:
           name: CognitoAuthorizer
 getMealById:
   handler: src/main/functions/meal/getMealById.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
   events:
     - httpApi:
         path: /meals/{id}
@@ -26,6 +42,14 @@ createTextMeal:
   handler: src/main/functions/meal/createTextMeal.handler
   memorySize: 256
   timeout: 29
+  environment:
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY}
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /meals/text
@@ -36,6 +60,14 @@ addMealItems:
   handler: src/main/functions/meal/addMealItems.handler
   memorySize: 256
   timeout: 29
+  environment:
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY}
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /meals/{id}/items
@@ -44,6 +76,13 @@ addMealItems:
           name: CognitoAuthorizer
 deleteMeal:
   handler: src/main/functions/meal/deleteMeal.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.mealsBucketDelete}
   events:
     - httpApi:
         path: /meals/{id}
@@ -52,6 +91,12 @@ deleteMeal:
           name: CognitoAuthorizer
 removeMealItem:
   handler: src/main/functions/meal/removeMealItem.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /meals/{id}/items/{itemId}
@@ -60,6 +105,12 @@ removeMealItem:
           name: CognitoAuthorizer
 restoreMealItem:
   handler: src/main/functions/meal/restoreMealItem.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /meals/{id}/items/{itemId}/restore
@@ -71,6 +122,17 @@ processMeal:
   memorySize: 1024
   # Must stay below Meal.PROCESSING_LEASE_SECONDS (130s).
   timeout: 120
+  environment:
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY}
+    CLOUDFLARE_AI_API_TOKEN: ${env:CLOUDFLARE_AI_API_TOKEN, ''}
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.mealsBucketGet}
+        - ${self:custom.iam.mealsBucketDelete}
   events:
     - sqs:
         arn: !GetAtt MealsQueue.Arn
@@ -79,6 +141,13 @@ processMeal:
 checkMealUpload:
   handler: src/main/functions/meal/checkMealUpload.handler
   timeout: 15
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.mealsBucketDelete}
   events:
     - sqs:
         arn: !GetAtt MealUploadCheckQueue.Arn
@@ -86,6 +155,13 @@ checkMealUpload:
         functionResponseType: ReportBatchItemFailures
 newMealUploadedTrigger:
   handler: src/main/functions/meal/newMealUploadedTrigger.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.mealsBucketGet}
+        - ${self:custom.iam.mealsQueueSend}
   events:
     - s3:
         bucket: !Ref MealsBucket

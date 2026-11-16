@@ -42,6 +42,29 @@ AWS_PROFILE=nacal-prod sls deploy function -f processMeal --stage prod
 
   As tabelas e o user pool não têm `DeletionPolicy: Retain`. Se a termination protection for desligada, a remoção da stack falha nesses recursos em vez de preservá-los fora da stack, e o resto (Lambdas, filas, API Gateway, CloudFront) é apagado. Em dev nada disso está ligado, exceto o `Retain` do bucket.
 
+## Permissões e segredos por função
+
+Cada Lambda tem o próprio papel IAM (`provider.iam.role.mode: perFunction` no `serverless.yml`), com o nome `nacal-api-<stage>-<função>-<região>-lambdaRole`. O Serverless põe sozinho a escrita no log group da função e, nas funções com evento SQS (`processMeal`, `checkMealUpload`), o `ReceiveMessage`/`DeleteMessage`/`GetQueueAttributes` da fila. O resto vem dos trechos de `sls/iam/statements.yml` que a função lista em `iam.role.statements` (`${self:custom.iam.<trecho>}`): leitura e escrita da tabela principal, tabela de rate limit, cada ação admin do Cognito, `PutObject`/`GetObject`/`DeleteObject` do bucket, envio para cada fila e publicação no `DQLAlarmTopic`.
+
+Os segredos ficam só no `environment` das funções que os usam. O que não é segredo (tabelas, filas, URLs, flags) continua em `sls/config/env.yml`, para todas:
+
+| Segredo | Funções |
+|---|---|
+| `COGNITO_CLIENT_SECRET` | `signUp`, `signIn`, `confirmSignUp`, `resendConfirmationCode`, `refreshToken`, `forgotPassword`, `confirmationForgotPassword`, `oauthCallback` |
+| `ASAAS_API_KEY` | `checkout`, `cancel`, `webhookAsaas`, `reconcilePayments` |
+| `ASAAS_WEBHOOK_TOKEN` | `webhookAsaas` |
+| `OPENAI_API_KEY` | `processMeal`, `createTextMeal`, `addMealItems` |
+| `CLOUDFLARE_AI_API_TOKEN` | `processMeal` |
+
+Ao mudar o código:
+
+- **Uma função passa a chamar algo novo da AWS** (outro repositório, outro método de gateway, um serviço compartilhado que cresceu): acrescente o trecho em **todas** as funções que chegam a esse código pela injeção de dependência, não só na do endpoint novo. Permissão faltando não quebra o deploy: aparece em runtime, com o `error.name` do SDK no log (`AccessDeniedException` no DynamoDB e no Cognito, `AccessDenied` no S3; no `HeadObject` o `403` aparece como `Unknown`). Nas funções HTTP vira `500`; nos consumidores de fila e no trigger do S3 vira erro da invocação, com novas tentativas e, nas filas, mensagem na DLQ. A tabela de rate limit só é usada por controllers com `@RateLimit` e por quem consome ou estorna cota (`MealQuotaService`, `failAndRefund`/`rejectAndRefund`).
+- **Uma função passa a usar um segredo**: ponha a variável no `environment` dela. O `COGNITO_CLIENT_SECRET`, o `ASAAS_API_KEY` e o `ASAAS_WEBHOOK_TOKEN` são opcionais no `env.ts` e são cobrados só quando o código os lê (getters do `AppConfig`). Sem a variável, a request falha com `Error: <NOME> is not configured for this function.`. O SDK da OpenAI lê `OPENAI_API_KEY` sozinho e falha ao criar o `MealAiGateway`. Segredo novo segue o mesmo padrão: opcional no `env.ts` e getter com `requireSecret` no `AppConfig`.
+- **Função nova**: declare o `iam.role.statements` dela. Sem esse bloco ela recebe só os logs. O nome do papel tem limite de 64 caracteres e o de prod mais longo hoje tem 62 (`nacal-api-prod-confirmationForgotPassword-sa-east-1-lambdaRole`): uma função com nome de 29 caracteres ou mais quebra o deploy de prod, a menos que ganhe um `iam.role.name` mais curto.
+- **Conferir antes do deploy**: `sls package` gera `.serverless/cloudformation-template-update-stack.json`, com um recurso `<Função>IamRoleLambdaExecution` por função e as variáveis em `<Função>LambdaFunction.Properties.Environment`.
+
+Valor faltando no `.env` ou no `.env.prod` continua quebrando cedo: `${env:...}` sem valor padrão faz o `sls deploy` falhar, e o `check:prod` valida o `.env.prod`.
+
 ## Alarmes
 
 Todos publicam no tópico SNS `DQLAlarmTopic` (o nome é esse mesmo, com `DQL`, é como aparece no console), que manda e-mail para `DLQ_ALARM_EMAIL`. Os alarmes do CloudWatch só ficam ativos em prod; os alertas do código (estorno e chargeback, pagamento de outra assinatura, reconciliação) também saem em dev. O que fazer com cada e-mail, com exemplos e comandos: [runbook de alertas](runbooks/alertas.md).

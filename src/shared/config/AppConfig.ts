@@ -32,7 +32,9 @@ export class AppConfig {
       cognito: {
         clientId: env.COGNITO_CLIENT_ID,
         userPoolId: env.COGNITO_USER_POOL_ID,
-        clientSecret: env.COGNITO_CLIENT_SECRET,
+        get clientSecret() {
+          return requireSecret('COGNITO_CLIENT_SECRET', env.COGNITO_CLIENT_SECRET);
+        },
         userPooldomain: env.COGNITO_POOL_DOMAIN,
       },
     };
@@ -59,9 +61,13 @@ export class AppConfig {
 
     this.billing = {
       asaas: {
-        apiKey: env.ASAAS_API_KEY,
+        get apiKey() {
+          return requireSecret('ASAAS_API_KEY', env.ASAAS_API_KEY);
+        },
         baseUrl: env.ASAAS_BASE_URL,
-        webhookToken: env.ASAAS_WEBHOOK_TOKEN,
+        get webhookToken() {
+          return requireSecret('ASAAS_WEBHOOK_TOKEN', env.ASAAS_WEBHOOK_TOKEN);
+        },
         webhookAllowedIps: parseAsaasWebhookAllowedIps(env.ASAAS_WEBHOOK_ALLOWED_IPS),
       },
       appWebUrl: env.APP_WEB_URL,
@@ -79,6 +85,14 @@ export class AppConfig {
     };
   }
 
+}
+
+function requireSecret(name: string, value: string | undefined): string {
+  if (!value) {
+    throw new Error(`${name} is not configured for this function.`);
+  }
+
+  return value;
 }
 
 function parseGateEnabled(raw: string | undefined): boolean {

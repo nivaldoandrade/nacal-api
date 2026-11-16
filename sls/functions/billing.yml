@@ -8,6 +8,12 @@ plans:
           name: CognitoAuthorizer
 trial:
   handler: src/main/functions/billing/startTrial.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /billing/trial
@@ -17,6 +23,14 @@ trial:
 checkout:
   handler: src/main/functions/billing/checkout.handler
   timeout: 29
+  environment:
+    ASAAS_API_KEY: ${env:ASAAS_API_KEY}
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /billing/checkout
@@ -26,6 +40,14 @@ checkout:
 cancel:
   handler: src/main/functions/billing/cancel.handler
   timeout: 15
+  environment:
+    ASAAS_API_KEY: ${env:ASAAS_API_KEY}
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
   events:
     - httpApi:
         path: /billing/cancel
@@ -36,6 +58,16 @@ webhookAsaas:
   handler: src/main/functions/billing/webhookAsaas.handler
   timeout: 15
   reservedConcurrency: 5
+  environment:
+    ASAAS_API_KEY: ${env:ASAAS_API_KEY}
+    ASAAS_WEBHOOK_TOKEN: ${env:ASAAS_WEBHOOK_TOKEN}
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.alertTopicPublish}
   events:
     - httpApi:
         path: /billing/webhooks/asaas
@@ -44,6 +76,15 @@ reconcilePayments:
   handler: src/main/functions/billing/reconcilePayments.handler
   timeout: 60
   maximumRetryAttempts: 0
+  environment:
+    ASAAS_API_KEY: ${env:ASAAS_API_KEY}
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
+        - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.alertTopicPublish}
   events:
     - schedule:
         rate: rate(1 hour)

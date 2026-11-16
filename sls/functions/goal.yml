@@ -1,5 +1,10 @@
 updateGoal:
   handler: src/main/functions/goal/updateGoal.handler
+  iam:
+    role:
+      statements:
+        - ${self:custom.iam.mainTableRead}
+        - ${self:custom.iam.mainTableWrite}
   events:
     - httpApi:
         path: /goals

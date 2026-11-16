@@ -6,6 +6,7 @@ service: nacal-api
 custom:
   cognito:
     UserPoolName: ${self:service}-${sls:stage}-UserPool
+  iam: ${file(./sls/iam/statements.yml)}
 
 provider:
   name: aws
@@ -18,7 +19,8 @@ provider:
     httpApi: true
   environment: ${file(./sls/config/env.yml)}
   iam:
-    role: ${file(./sls/config/role.yml)}
+    role:
+      mode: perFunction
   httpApi:
     cors: ${file(./sls/config/cors.js)}
     disableDefaultEndpoint: ${env:APIGATEWAY_DEFAULT_ENDPOINT_DISABLE, false}

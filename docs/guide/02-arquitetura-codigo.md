@@ -225,7 +225,7 @@ export class CreateMealController extends Controller<'private'> {
 3. **Controller**: `src/application/controllers/<domínio>/<Nome>Controller.ts`, com `@Injectable()`, `@Schema(...)` e, se for o caso, `@RateLimit(...)`.
 4. **Handler**: `src/main/functions/<domínio>/<nome>.ts` com `lambdaHttpAdapter(<Nome>Controller)`.
 5. **Rota**: entrada em `sls/functions/<domínio>.yml` (o de `auth` usa `.yaml`), com `authorizer: name: CognitoAuthorizer` se for privada. Um domínio novo também precisa entrar em `functions:` no `serverless.yml`.
-6. **Permissões**: se a Lambda acessa um recurso novo da AWS, ajuste `sls/config/role.yml`.
+6. **Permissões e segredos**: cada função tem o próprio papel IAM. Liste em `iam.role.statements` os trechos de `sls/iam/statements.yml` que ela usa, e ponha no `environment` dela só os segredos que ela lê. Se o use case reaproveita um serviço que passou a chamar algo novo da AWS, as outras funções que usam esse serviço também precisam do trecho. Detalhes em [Operação](06-operacao.md#permissões-e-segredos-por-função).
 7. **Docs**: atualize o README da API e, se o fluxo mudou, o diagrama correspondente neste guia.
 8. **Checagem**: `yarn typecheck` e `npx eslint .`.
 
