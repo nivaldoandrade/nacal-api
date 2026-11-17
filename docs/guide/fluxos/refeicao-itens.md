@@ -87,10 +87,10 @@ sequenceDiagram
     L-->>U: 200 com meal, addedFoods, skippedFoodsCount e unidentifiedFoodsCount
 ```
 
-- A chamada à OpenAI é síncrona, com o mesmo timeout de 12 s e 1 retry da [refeição por texto](refeicao-texto.md).
+- A chamada à OpenAI é síncrona, com o mesmo timeout de 18 s, 1 retry e prazo de 25 s da [refeição por texto](refeicao-texto.md), e devolve no máximo 30 itens (`maxItems` no schema).
 - A IA recebe os itens já registrados (`<registered_items>`), para não duplicar o que já está na refeição e para entender referências como "mais um desses".
 - **Adicionar itens não consome cota.** O Free só precisa ter saldo, para quem esgotou a cota não usar a IA de graça por esse caminho.
-- `skippedFoodsCount` diz quantos alimentos a IA achou mas não couberam no limite de 30.
+- `skippedFoodsCount` diz quantos alimentos a IA devolveu mas não couberam no limite de 30. A conta parte do que a IA devolve, que já vem limitado a 30 itens contando os não identificados: num texto com mais de 30 menções, o que passou disso não aparece em `skippedFoodsCount`.
 - Os itens novos levam `source: ADDED` e continuam a numeração de `order` depois do maior existente, inclusive dos removidos.
 - **Duas adições ao mesmo tempo não repetem o `order`.** A leitura é consistente e o `appendFoods` confere o `foodsVersion` lido (com `attribute_not_exists` para refeição antiga, como no `saveFoods`). Se outra edição gravou no meio da chamada à IA, o `appendFoods` falha: o use case relê a refeição, valida de novo (`404`, `409 MEAL_NOT_EDITABLE` ou `409 MEAL_ITEM_LIMIT_REACHED`), recalcula `order` e o espaço que sobra e grava de novo, **sem repetir a chamada à IA** (a resposta já foi paga). São até 3 gravações; se todas perderem a corrida, a resposta é `500`. A IA viu a refeição como estava antes da outra adição, então uma adição simultânea do mesmo item pode duplicá-lo.
 

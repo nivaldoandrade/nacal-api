@@ -30,7 +30,7 @@ sequenceDiagram
     alt sem cota
         L-->>U: 403 FREE_QUOTA_EXCEEDED ou 429 DAILY_MEAL_LIMIT_REACHED
     end
-    L->>AI: prompt de texto + user_note, timeout 12 s, 1 retry
+    L->>AI: prompt de texto + user_note, timeout 18 s, 1 retry, até 30 itens
     AI-->>L: alimentos marcados e mealType
     L->>L: remove os não identificados, limita a 30
     alt nenhum alimento
@@ -52,7 +52,7 @@ sequenceDiagram
 ## Passo a passo
 
 1. **Plano e cota.** O `CreateTextMealUseCase` resolve o plano efetivo e chama `MealQuotaService.ensureCanCreateMeal`, que só **lê** o contador: o Free precisa de saldo no mês, o Pro precisa de saldo no dia. Nada é consumido ainda.
-2. **IA.** `MealAiGateway.extractMealFromText` usa o mesmo prompt do áudio (`getTextMealPrompt`, variante `TEXT`), com o texto dentro de `<user_note>` e `<` e `>` neutralizados. Por ser síncrona, a chamada tem timeout de 12 s e 1 retry (`SYNC_REQUEST_OPTIONS`), para caber nos 29 s da Lambda.
+2. **IA.** `MealAiGateway.extractMealFromText` usa o mesmo prompt do áudio (`getTextMealPrompt`, variante `TEXT`), com o texto dentro de `<user_note>` e `<` e `>` neutralizados. Por ser síncrona, a chamada tem timeout de 18 s, 1 retry e prazo total de 25 s (`syncRequestOptions`), para caber nos 29 s da Lambda. Depois de um timeout, o retry tem só ~6 s até o prazo: ele serve para erros rápidos (429, 5xx, conexão), e uma OpenAI travada vira `500` por volta dos 25 s, sem consumir cota. O schema limita a resposta a 30 itens (`maxItems`), o que segura os tokens de saída e o tempo de um texto com muitos itens (30 itens levam ~5–10 s; antes do limite, um texto de 32 itens levou 9,8 s, perto do antigo timeout de 12 s). Parâmetros da chamada (`reasoning.effort`, `max_output_tokens`, cache) em [refeição por foto ou áudio](refeicao-foto-audio.md#3-processamento-processmeal).
 3. **Itens não identificados.** Menções sem alimento claro ("alguma coisa no pote", "um pacotinho") vêm marcadas com `unidentifiedKind` e são removidas. A quantidade removida volta na resposta como `unidentifiedFoodsCount`, para o app avisar o usuário.
 4. **Nenhum alimento** gera `422 NO_FOOD_IDENTIFIED`, e o usuário **não perde cota**.
 5. **Consumo da cota.** Só agora o contador é incrementado, com a mesma lógica da foto (ver [cotas](../05-erros-cotas-rate-limit.md#cotas-de-refeição)). Como a checagem e o consumo são separados, duas requests simultâneas podem passar pela checagem. O incremento condicional garante que só uma consome a última vaga, e a outra recebe 403 ou 429.

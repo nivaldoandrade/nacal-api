@@ -27,23 +27,27 @@ const taggedFoodSchema = foodSchema.extend({
   unidentifiedKind: unidentifiedKindSchema,
 });
 
+const taggedFoodsSchema = z.array(taggedFoodSchema).max(Meal.MAX_FOODS);
+
 const imageSchema = z.object({
   unidentified: unidentifiedKindSchema,
   mealType: mealTypeSchema,
-  foods: z.array(taggedFoodSchema),
+  foods: taggedFoodsSchema,
 });
 
 const addItemsSchema = z.object({
-  foods: z.array(taggedFoodSchema),
+  foods: taggedFoodsSchema,
 });
 
 const MODEL = 'gpt-5.4-mini';
 
+const REASONING_EFFORT: OpenAI.ReasoningEffort = 'none';
+
 const TRANSCRIPTION_MODEL = 'gpt-4o-transcribe';
 
-const MAX_OUTPUT_TOKENS = 4096;
+const MAX_OUTPUT_TOKENS = 2048;
 
-const SYNC_TIMEOUT_MS = 12_000;
+const SYNC_TIMEOUT_MS = 18_000;
 
 const SYNC_DEADLINE_MS = 25_000;
 
@@ -60,7 +64,7 @@ const NOTE_STOP_WORDS = new Set([
 
 const textMealSchema = z.object({
   mealType: mealTypeSchema,
-  foods: z.array(taggedFoodSchema),
+  foods: taggedFoodsSchema,
 });
 
 @Injectable()
@@ -429,6 +433,9 @@ export class MealAiGateway {
         input,
         store: false,
         max_output_tokens: MAX_OUTPUT_TOKENS,
+        reasoning: {
+          effort: REASONING_EFFORT,
+        },
         text: {
           format: zodTextFormat(outputSchema, 'meal'),
         },

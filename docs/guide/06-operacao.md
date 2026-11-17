@@ -121,8 +121,10 @@ Exemplo no Logs Insights (tokens por operação na última semana):
 ```text
 fields operation, usage.inputTokens, usage.cachedTokens, usage.outputTokens, usage.reasoningTokens
 | filter message = "openai response"
-| stats count() as calls, avg(usage.inputTokens) as input, avg(usage.outputTokens) as output, max(usage.outputTokens) as maxOutput by operation
+| stats count() as calls, avg(usage.inputTokens) as input, avg(usage.cachedTokens) as cached, avg(usage.outputTokens) as output, max(usage.outputTokens) as maxOutput, max(usage.reasoningTokens) as maxReasoning by operation
 ```
+
+Como ler: `maxOutput` deve ficar bem abaixo do `max_output_tokens` (2048; 30 itens, o máximo do schema, dão ~1.100–1.200), e `maxReasoning` em 0 (`reasoning.effort: none`). Se aparecer `responseStatus` `incomplete`, o motivo está no `incompleteReason` da mesma linha (ex.: `max_output_tokens`), e o erro da tentativa sai como `OPEN AI incomplete response`. `cached` baixo em relação a `input` com tráfego espaçado é esperado: o cache da OpenAI expira com 5–10 min sem uso. Preço do `gpt-5.4-mini` (2026-11-17, por milhão de tokens): US$ 0,75 de entrada, US$ 0,075 de entrada em cache e US$ 4,50 de saída; uma foto custa ~US$ 0,0043 sem cache e ~US$ 0,0019 com o prompt em cache.
 
 ## Runbooks e scripts
 
