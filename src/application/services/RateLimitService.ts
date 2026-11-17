@@ -30,7 +30,7 @@ export class RateLimitService {
 
 export namespace RateLimitService {
   export type CheckParams = {
-    scope: 'ip' | 'account' | 'email';
+    scope: RateLimitRepository.RateLimitScope;
     key: string;
     limit: number;
     windowSeconds: number;

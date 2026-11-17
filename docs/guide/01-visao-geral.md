@@ -114,8 +114,8 @@ flowchart TB
 Pontos que valem guardar:
 
 - **O arquivo nunca passa pela Lambda na subida.** A API devolve um Presigned POST e o app manda o arquivo direto para o S3. A Lambda só lê o arquivo depois, já no processamento.
-- **As fotos saem pela CDN.** O app mostra as fotos pela CloudFront, e a OpenAI também baixa a imagem pela URL da CDN. O bucket não é público (Origin Access Control).
-- **Duas tabelas.** `MainTable` guarda as entidades. `RateLimitTable` guarda contadores atômicos: rate limit por IP, conta ou e-mail, as **cotas de refeição** e a idempotência do webhook. As duas usam TTL (`expiresAt`).
+- **As fotos saem pela CDN.** O app mostra as fotos pela CloudFront. A OpenAI não usa a CDN: o `processMeal` manda o arquivo que acabou de baixar do S3 e validar (base64 na foto). O bucket não é público (Origin Access Control).
+- **Duas tabelas.** `MainTable` guarda as entidades. `RateLimitTable` guarda contadores atômicos: rate limit por IP, conta, e-mail ou hash do token, as **cotas de refeição**, o teto diário de rejeições estornadas e a idempotência do webhook. As duas usam TTL (`expiresAt`).
 - **Toda fila tem DLQ e alarme.** Os alarmes só disparam em prod (`IsProd`) e caem no tópico SNS, que manda e-mail. Além das filas, há alarmes de `5xx` do HTTP API, de resposta não-2xx do webhook do Asaas, de refeição `FAILED` e de throttling da `processMeal` (ver [operação](06-operacao.md#alarmes)).
 - **Logs em JSON.** Uma linha por evento, com retenção de 30 dias; as métricas `MealFailed` e `WebhookNon2xx` saem das próprias linhas (EMF), sem metric filter.
 
@@ -162,7 +162,7 @@ São 32 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um
 | Lambda | Gatilho | O que faz | Fluxo |
 |---|---|---|---|
 | `newMealUploadedTrigger` | S3 `ObjectCreated` no `MealsBucket` | Marca a refeição como `QUEUED` e publica na `MealsQueue` | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
-| `processMeal` | SQS `MealsQueue` (lote 2 com retorno parcial, timeout 120 s) | Valida o arquivo, roda o gate e a IA e grava o resultado | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
+| `processMeal` | SQS `MealsQueue` (lote 2 com retorno parcial, até 5 execuções ao mesmo tempo, timeout 120 s) | Valida o arquivo, roda o gate e a IA e grava o resultado | [Foto/áudio](fluxos/refeicao-foto-audio.md) |
 | `checkMealUpload` | SQS `MealUploadCheckQueue` (lote 10 com retorno parcial, atraso de 15 min por mensagem, definido no código) | Falha e estorna a refeição que travou antes do processamento | [Foto/áudio](fluxos/refeicao-foto-audio.md#refeição-presa-checagem-de-15-min) |
 | `reconcilePayments` | EventBridge `rate(1 hour)`, só com o Asaas de produção | Confere pagamentos no Asaas e corrige assinaturas que o webhook perdeu | [Reconciliação](fluxos/billing-reconciliacao.md) |
 | `preSignUpTrigger` | Cognito `PreSignUp` | Aplica o beta fechado e cria o usuário "shadow" do login com Google | [Login com Google](fluxos/auth-google-oauth.md) |

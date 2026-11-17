@@ -64,20 +64,7 @@ export class RateLimitRepository {
   }: RateLimitRepository.IncrementQuotaCounterParams): Promise<number | null> {
     const command = new UpdateCommand({
       TableName: this.config.db.dynamodb.rateLimitTable,
-      Key: RateLimitRepository.getQuotaCounterKey({ scope, key, bucket }),
-      UpdateExpression: 'ADD #count :inc SET #expiresAt = :expiresAt',
-      ...(limit !== undefined && {
-        ConditionExpression: 'attribute_not_exists(#count) OR #count < :max',
-      }),
-      ExpressionAttributeNames: {
-        '#count': 'count',
-        '#expiresAt': 'expiresAt',
-      },
-      ExpressionAttributeValues: {
-        ':inc': 1,
-        ':expiresAt': expiresAt,
-        ...(limit !== undefined && { ':max': limit }),
-      },
+      ...RateLimitRepository.buildQuotaCounterIncrement({ scope, key, bucket, expiresAt, limit }),
       ReturnValues: 'UPDATED_NEW',
     });
 
@@ -143,7 +130,32 @@ export class RateLimitRepository {
     };
   }
 
-  static buildQuotaCounterDecrement(params: RateLimitRepository.QuotaCounterKeyParams): RateLimitRepository.QuotaCounterDecrement {
+  static buildQuotaCounterIncrement({
+    scope,
+    key,
+    bucket,
+    expiresAt,
+    limit,
+  }: RateLimitRepository.IncrementQuotaCounterParams): RateLimitRepository.QuotaCounterUpdate {
+    return {
+      Key: RateLimitRepository.getQuotaCounterKey({ scope, key, bucket }),
+      UpdateExpression: 'ADD #count :inc SET #expiresAt = :expiresAt',
+      ...(limit !== undefined && {
+        ConditionExpression: 'attribute_not_exists(#count) OR #count < :max',
+      }),
+      ExpressionAttributeNames: {
+        '#count': 'count',
+        '#expiresAt': 'expiresAt',
+      },
+      ExpressionAttributeValues: {
+        ':inc': 1,
+        ':expiresAt': expiresAt,
+        ...(limit !== undefined && { ':max': limit }),
+      },
+    };
+  }
+
+  static buildQuotaCounterDecrement(params: RateLimitRepository.QuotaCounterKeyParams): RateLimitRepository.QuotaCounterUpdate {
     return {
       Key: RateLimitRepository.getQuotaCounterKey(params),
       UpdateExpression: 'ADD #count :dec',
@@ -190,13 +202,15 @@ export class RateLimitRepository {
 
 export namespace RateLimitRepository {
   export type IncrementParams = {
-    scope: 'ip' | 'account' | 'email';
+    scope: RateLimitScope;
     key: string;
     windowSeconds: number;
     limit: number;
   }
 
-  export type QuotaScope = 'account-monthly' | 'account-daily';
+  export type RateLimitScope = 'ip' | 'account' | 'email' | 'token';
+
+  export type QuotaScope = 'account-monthly' | 'account-daily' | 'account-rejections';
 
   export type QuotaCounterKeyParams = {
     scope: QuotaScope;
@@ -219,10 +233,10 @@ export namespace RateLimitRepository {
     SK: string;
   };
 
-  export type QuotaCounterDecrement = {
+  export type QuotaCounterUpdate = {
     Key: QuotaCounterKey;
     UpdateExpression: string;
-    ConditionExpression: string;
+    ConditionExpression?: string;
     ExpressionAttributeNames: Record<string, string>;
     ExpressionAttributeValues: Record<string, number>;
   };

@@ -2,6 +2,7 @@ import { Meal } from '@application/entities/Meal';
 import { MealRejectedError } from '@application/errors/MealRejectedError';
 import { MealFileValidationService } from '@application/services/MealFileValidationService';
 import { MealNamingService } from '@application/services/MealNamingService';
+import { MealQuotaService } from '@application/services/MealQuotaService';
 import { MealAiGateway } from '@infra/ai/gateways/MealAiGateway';
 import { MealGateGateway } from '@infra/ai/gateways/MealGateGateway';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
@@ -96,7 +97,7 @@ export class ProcessMealUseCase {
         mealType,
         foods,
         unidentified,
-      } = await this.mealAiGateway.processMeal(claimedMeal);
+      } = await this.mealAiGateway.processMeal({ meal: claimedMeal, file: inputFile });
 
       if (foods.length === 0) {
         throw new MealRejectedError(
@@ -144,12 +145,14 @@ export class ProcessMealUseCase {
           meal: claimedMeal,
           reason: error.reason,
           gateScore: error.gateScore,
+          refundLimit: MealQuotaService.getRejectionRefundLimit(),
         });
 
         logger.info('meal rejected', {
           status: Meal.StatusType.REJECTED,
           reason: error.reason,
           rejected: rejection.rejected,
+          refunded: rejection.refunded,
           durationMs: Date.now() - startedAt,
         });
 

@@ -60,6 +60,7 @@ resources:
   - ${file(./sls/resources/reconcilePaymentsAlarm.yml)}
   - ${file(./sls/resources/observabilityAlarms.yml)}
   - ${file(./sls/resources/rateLimitTable.yml)}
+  - ${file(./sls/resources/httpApiStage.yml)}
 
 functions:
   - ${file(./sls/functions/auth.yaml)}

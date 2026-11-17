@@ -14,6 +14,8 @@ export class MealQuotaService {
 
   static readonly PRO_MONTH_SUFFIX = '#PRO';
 
+  static readonly DAILY_REFUNDED_REJECTIONS_LIMIT = 5;
+
   constructor(private readonly rateLimitRepository: RateLimitRepository) { }
 
   async consume({ accountId, plan }: MealQuotaService.Input): Promise<MealQuotaService.ConsumeResult> {
@@ -176,6 +178,16 @@ export class MealQuotaService {
     return MealQuotaService.toQuota(usedToday, MealQuotaService.PRO_DAILY_LIMIT);
   }
 
+  static getRejectionRefundLimit(now: Date = new Date()): MealQuotaService.RejectionRefundLimit {
+    const { bucket, expiresAt } = RateLimitRepository.getCalendarDayBucket(now, MealQuotaService.DAY_TIME_ZONE);
+
+    return {
+      bucket,
+      expiresAt,
+      limit: MealQuotaService.DAILY_REFUNDED_REJECTIONS_LIMIT,
+    };
+  }
+
   private static getProMonthBucket(monthBucket: string): string {
     return `${monthBucket}${MealQuotaService.PRO_MONTH_SUFFIX}`;
   }
@@ -209,6 +221,12 @@ export namespace MealQuotaService {
   export type ConsumeResult = {
     quotaMonth: string;
     quotaDay: string | null;
+  }
+
+  export type RejectionRefundLimit = {
+    bucket: string;
+    expiresAt: number;
+    limit: number;
   }
 
   export type RefundInput = {

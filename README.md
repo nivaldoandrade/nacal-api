@@ -24,12 +24,13 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio, no texto ou na descrição da foto sobrepondo o horário;
 - **Dia da refeição no fuso do usuário**: A refeição é agrupada no dia local de quando foi registrada (mesmo `timeZone`), então um jantar às 23h fica no mesmo dia do café da manhã, e não no dia seguinte em UTC;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
-- **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry);
+- **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry) e no máximo 5 execuções ao mesmo tempo (`maximumConcurrency`); a OpenAI recebe o arquivo já validado (base64 na foto), não a URL da CDN;
 - **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
 - **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
 - **Alarmes**: Notificação por email (só em prod) quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues), quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min), quando o HTTP API responde `5xx` (3 em 5 min), quando o webhook do Asaas responde algo diferente de 2xx, quando uma refeição vira `FAILED`, quando a `processMeal` sofre throttling e quando o trigger do S3 dá erro;
 - **Observabilidade**: logs JSON com uma linha por request (`routeKey`, `statusCode`, latência, erro), transições do processamento de refeições, `usage` de tokens de cada chamada à OpenAI, métricas EMF (`MealFailed`, `WebhookNon2xx`), access log do HTTP API, retenção de 30 dias e sourcemaps nas stacks de erro;
-- **Rate limiting**: Proteção por IP, e-mail e conta com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF);
+- **Rate limiting**: Proteção por IP, e-mail, conta e hash do refresh token com resposta `429 RATE_LIMIT_EXCEEDED` e header `Retry-After` — implementado em código com contadores atômicos no DynamoDB (sem WAF) —, mais throttling de 50 req/s (burst 100) por rota no stage do HTTP API;
+- **Teto de estornos**: no máximo 5 rejeições estornadas por dia por conta; da 6ª em diante, a refeição rejeitada fica com a cota;
 - **Planos e assinatura**: plano Free com **20 refeições AI/mês** e Pro com **até 20 refeições AI por dia** (uso justo); **trial de 7 dias** sem cartão (1 por conta), checkout hospedado no **Asaas** (mensal recorrente só cartão; anual Pix/cartão), webhook idempotente como fonte da verdade (estorno total e chargeback descontam o ciclo pago e cancelam a mensal no Asaas, com alerta por e-mail), reconciliação horária dos pagamentos confirmados e estornados (ativa ou desconta o que o webhook não aplicou e avisa por e-mail) e downgrade lazy na expiração; a rota pública do webhook é endurecida com allowlist dos IPs oficiais do Asaas e rate limit por IP (120/60s), além de `reservedConcurrency: 5` na função;
 - **Produção**: stage `prod` com proteção contra deleção (Cognito e DynamoDB), alarme da DLQ ativo, CORS restrito e validação do `.env.prod` antes do deploy (`yarn deploy:prod`);
 
@@ -300,7 +301,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 | Método | Url                      | Descrição                                              | Autenticação |
 | ------ | ------------------------ | ------------------------------------------------------ | ------------ |
-| POST   | `/create-meal`           | Cria uma refeição (JPEG ≤10 MB ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
+| POST   | `/create-meal`           | Cria uma refeição (JPEG ≤2 MB e ≤4096 px, ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
 | GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos, `canAddItems`, `canRemoveItems` e `unidentified` | JWT          |
 | POST   | `/meals/text`            | Cria uma refeição a partir de um texto (IA síncrona) e devolve a refeição pronta | JWT          |
@@ -321,7 +322,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 
 ## Rate Limit
 
-Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores atômicos na `RateLimitTable`. Estourar o limite responde `429 RATE_LIMIT_EXCEEDED` com o header `Retry-After`. Os limites de cada rota estão em [Erros, cotas e rate limit](docs/guide/05-erros-cotas-rate-limit.md#rate-limit).
+Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores atômicos na `RateLimitTable`. Estourar o limite responde `429 RATE_LIMIT_EXCEEDED` com o header `Retry-After`. Os limites de cada rota estão em [Erros, cotas e rate limit](docs/guide/05-erros-cotas-rate-limit.md#rate-limit). Antes disso, o stage do HTTP API corta acima de 50 req/s (burst 100) por rota, com `429` do API Gateway (`{"message":"Too Many Requests"}`).
 
 ## Exemplos de Uso
 
@@ -530,7 +531,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 - `timeZone` é a zona IANA do dispositivo (ex.: `America/Sao_Paulo`, `Europe/Lisbon`), usada para nomear a refeição e definir em qual dia ela aparece; é opcional e cai em `America/Sao_Paulo` se ausente/inválida.
 - `description` é opcional e só aceita fotos (em áudio retorna `400`): texto livre de até 300 caracteres após `trim`; string vazia é tratada como ausente. Não aparece nas respostas de leitura da refeição.
-- `contentType` aceito: `image/jpeg` (até 10 MB), `audio/m4a` ou `audio/webm` (até 2 MB e 1–32s); `fileSize` é em bytes. A validação real do conteúdo acontece no processamento e um arquivo inválido vira `REJECTED`.
+- `contentType` aceito: `image/jpeg` (até 2 MB, maior lado até 4096 px e até 16 MP), `audio/m4a` ou `audio/webm` (até 2 MB e 1–32s); `fileSize` é em bytes. A validação real do conteúdo acontece no processamento e um arquivo inválido vira `REJECTED`.
 - **Cota**: consome 1 refeição na criação (Free sem cota no mês: `403 FREE_QUOTA_EXCEEDED`; Pro com 20 refeições no dia: `429 DAILY_MEAL_LIMIT_REACHED`). A cota volta se a refeição terminar em `REJECTED` ou `FAILED`.
 
 - Resposta esperada:
@@ -1145,12 +1146,12 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 ### Refeição fica com status REJECTED
 - É uma rejeição esperada, não uma falha de infraestrutura: arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos;
 - Consulte `rejectionReason` em `GET /meals/{id}`: `INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`;
-- A cota é estornada e `inputFileUrl` retorna `null`; o arquivo é removido do S3;
+- A cota é estornada (até 5 rejeições por dia por conta; da 6ª em diante, `quotaRefunded: false` e o log `meal rejected` traz `refunded: false`) e `inputFileUrl` retorna `null`; o arquivo é removido do S3;
 - Para falso positivo do gate de foto, revise `MEAL_GATE_REJECT_THRESHOLD` e os logs `meal_gate`/`meal_gate_error` no CloudWatch.
 
 ### Refeição fica com status FAILED
 - Verifique os logs da Lambda `processMeal` no CloudWatch (filtre pelo `mealId`: as linhas `meal processing attempt failed` trazem o erro de cada tentativa; em prod, o `MealFailedAlarm` avisa por email, ver o [runbook de alertas](docs/guide/runbooks/alertas.md#mealfailedalarm));
-- O trabalho da OpenAI de cada tentativa tem prazo de 90 s (análise 45 s + 1 retry, transcrição 30 s + 1 retry, download do áudio 15 s), que vale também para a espera de um `Retry-After` da OpenAI; estourou, a tentativa falha e vai para o retry ou para `FAILED`. Resposta cortada por `max_output_tokens` (4096) também vira erro (`OPEN AI incomplete response`);
+- O trabalho da OpenAI de cada tentativa tem prazo de 90 s (análise 45 s + 1 retry, transcrição 30 s + 1 retry), que vale também para a espera de um `Retry-After` da OpenAI; estourou, a tentativa falha e vai para o retry ou para `FAILED`. Resposta cortada por `max_output_tokens` (4096) também vira erro (`OPEN AI incomplete response`);
 - Confirme que a `OPENAI_API_KEY` está configurada e é válida;
 - Verifique se o formato do arquivo é suportado (imagens: JPEG; áudios: M4A, WebM);
 - Após 2 tentativas, a refeição fica `FAILED`, a cota é estornada, o arquivo é removido e a mensagem é descartada; falhas inesperadas que esgotam as 3 entregas da fila vão para a Dead Letter Queue e disparam alarme por email.
@@ -1162,8 +1163,9 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 
 ### Erro 429 / Rate limit excedido
 - Verifique o header `Retry-After` da resposta para saber quando tentar novamente;
-- Confirme qual escopo estourou (IP, email ou conta) na tabela `RateLimitTable` no DynamoDB (consulta por `PK = RL#<scope>#<chave>`);
-- Requests bloqueados **não** incrementam o contador — o limite é por janela fixa e recomeça ao expirar;
+- Corpo `{"message":"Too Many Requests"}` sem `error.code` e sem `Retry-After` é o throttling do stage do HTTP API (50 req/s por rota), não o rate limit em código;
+- Confirme qual escopo estourou (IP, email, conta ou token) na tabela `RateLimitTable` no DynamoDB (consulta por `PK = RL#<scope>#<chave>`);
+- Requests bloqueados **não** incrementam o contador da regra que bloqueou — o limite é por janela fixa e recomeça ao expirar. Com mais de uma regra na rota (ex.: token + IP no refresh, e-mail + IP no sign-in), as regras checadas antes da que bloqueou já contaram a tentativa;
 - `DAILY_MEAL_LIMIT_REACHED` não é rate limit: é a cota diária do Pro (contador `RL#account-daily#<id>`, SK `YYYY-MM-DD`), que recomeça à meia-noite de Brasília;
 - Se precisar ajustar um limite, basta alterar o decorator `@RateLimit` no controller correspondente.
 

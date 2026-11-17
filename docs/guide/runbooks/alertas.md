@@ -146,7 +146,7 @@ Só ligados em prod. O assunto é `ALARM: "nacal-api-prod-<alarme>" in South Ame
 | Alarme | Significa | O que fazer |
 |---|---|---|
 | `MealsDLQAlarm` | Uma refeição esgotou as 3 entregas sem conseguir nem marcar `FAILED` | Ver os logs da `processMeal` pelo `mealId` da mensagem (linhas `sqs message failed`, com o `messageId`). A refeição pode ter ficado presa sem estorno de cota |
-| `MealsQueueAgeAlarm` | A mensagem mais antiga da fila de refeições passou de 2 min | Ver erros e throttling da `processMeal` e se a OpenAI está fora |
+| `MealsQueueAgeAlarm` | A mensagem mais antiga da fila de refeições passou de 2 min | Ver erros e throttling da `processMeal`, se a OpenAI está fora e se a `ConcurrentExecutions` da `processMeal` ficou parada em 5 (rajada maior que o `maximumConcurrency`; se repetir, subir o valor em `sls/functions/meal.yml`, de olho no limite de tokens por minuto da OpenAI) |
 | `MealUploadCheckDLQAlarm` | A checagem de 15 min de uma refeição falhou 3 vezes | Ver os logs da `checkMealUpload` e conferir a refeição e a cota à mão |
 | `ReconcilePaymentsErrorsAlarm` | A Lambda da reconciliação deu erro | Ver os logs da `reconcilePayments`. Ela roda de novo na hora seguinte |
 | `HttpApi5xxAlarm` | 3 ou mais respostas `5xx` do HTTP API em 5 min | Ver [abaixo](#httpapi5xxalarm) |
@@ -249,7 +249,7 @@ Exemplo: 3 `MealFailed` com `source: attemptsExhausted` e `error.message` "[OPEN
 
 A Lambda `processMeal` foi recusada por falta de concorrência (métrica `Throttles`). As mensagens ficam na fila e são reentregues, então nada se perde de imediato, mas a refeição atrasa e o `MealsQueueAgeAlarm` deve vir junto.
 
-O que fazer: ver a concorrência da conta (`aws lambda get-account-settings`, a cota de prod é 1000) e se alguma função está consumindo tudo (métrica `ConcurrentExecutions` por função no CloudWatch). Se for rajada de refeições, considerar `maximumConcurrency` no evento SQS da `processMeal` (P17).
+O que fazer: ver a concorrência da conta (`aws lambda get-account-settings`, a cota de prod é 1000) e se alguma função está consumindo tudo (métrica `ConcurrentExecutions` por função no CloudWatch). O evento SQS da `processMeal` já tem `maximumConcurrency: 5`, que segura a rajada na fila sem gerar throttle; então este alarme indica que outras funções esgotaram a concorrência da conta.
 
 ### NewMealUploadedTriggerErrorsAlarm
 

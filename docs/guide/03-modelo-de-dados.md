@@ -119,7 +119,7 @@ Quase toda escrita é condicional. A condição é o que garante a regra de neg�
 | AW10 | Reivindicar a refeição para processar | `UpdateItem`, `ADD attempts 1` | `QUEUED`, ou `PROCESSING` com lease vencido, e `attempts < 2` | `claimForProcessing` |
 | AW11 | Devolver para a fila | `UpdateItem` | `PROCESSING` com o mesmo `leaseExpiresAt` | `markForRetry` |
 | AW12 | Gravar o resultado da IA | `UpdateItem` | `status = PROCESSING` | `markSuccess` |
-| AW13 | Rejeitar ou falhar **e estornar a cota** | `TransactWriteItems` nas duas tabelas, com `ClientRequestToken` | Rejeitar: `status = PROCESSING`. Falhar: status, `attempts` e lease lidos. Mais o contador `> 0`: se essa parte falhar, grava o status sem estorno (`quotaRefunded: false`) | `rejectAndRefund`, `failAndRefund` |
+| AW13 | Rejeitar ou falhar **e estornar a cota** | `TransactWriteItems` nas duas tabelas, com `ClientRequestToken` | Rejeitar: `status = PROCESSING`. Falhar: status, `attempts` e lease lidos. Mais o contador `> 0` e, só ao rejeitar, o teto diário de rejeições estornadas (`count < 5`): se essa parte falhar, grava o status sem estorno (`quotaRefunded: false`) | `rejectAndRefund`, `failAndRefund` |
 | AW14 | Adicionar itens | `UpdateItem`, `list_append` | `SUCCESS`, `foodsVersion` igual ao lido, menos de 5 adições, cabe nos 30 itens, dentro das 24 h | `appendFoods` |
 | AW15 | Remover ou restaurar item | `UpdateItem` | `SUCCESS` e `foodsVersion` igual ao lido | `saveFoods` |
 | AW16 | Excluir refeição | `UpdateItem` para `DELETED` | `status IN (SUCCESS, REJECTED, FAILED)` | `markDeleted` |
@@ -296,9 +296,10 @@ Itens só com `count` e `expiresAt`, sem `type`.
 
 | Uso | `PK` | `SK` | Atributos | TTL |
 |---|---|---|---|---|
-| Rate limit por janela | `RL#<ip, account ou email>#<rota>#<valor>`, ex.: `RL#ip#POST /auth/sign-in#203.0.113.7`. No escopo e-mail: `RL#email#<rota>#email#<e-mail>` | Início da janela (epoch) | `count`, `expiresAt` | Fim da janela |
+| Rate limit por janela | `RL#<ip, account, email ou token>#<rota>#<valor>`, ex.: `RL#ip#POST /auth/sign-in#203.0.113.7`. No escopo e-mail: `RL#email#<rota>#email#<e-mail>`; no escopo token: `RL#token#<rota>#token#<SHA-256 do token>` | Início da janela (epoch) | `count`, `expiresAt` | Fim da janela |
 | Cota mensal | `RL#account-monthly#<accountId>` | `AAAA-MM` (Free) ou `AAAA-MM#PRO` (Pro) | `count`, `expiresAt` | 7 dias depois do fim do mês |
 | Cota diária do Pro | `RL#account-daily#<accountId>` | `AAAA-MM-DD` no fuso de São Paulo | `count`, `expiresAt` | 15 dias |
+| Rejeições estornadas no dia (Free e Pro) | `RL#account-rejections#<accountId>` | `AAAA-MM-DD` no fuso de São Paulo | `count`, `expiresAt` | 15 dias |
 | Evento de webhook processado | `RL#webhook-event#<eventId>` | `EVENT` | `expiresAt` | 14 dias. Na reconciliação, a janela + 10 dias (45 no padrão de 35) |
 
 ## S3 e CDN

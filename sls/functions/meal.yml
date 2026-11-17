@@ -138,6 +138,7 @@ processMeal:
         arn: !GetAtt MealsQueue.Arn
         batchSize: 2
         functionResponseType: ReportBatchItemFailures
+        maximumConcurrency: 5
 checkMealUpload:
   handler: src/main/functions/meal/checkMealUpload.handler
   timeout: 15

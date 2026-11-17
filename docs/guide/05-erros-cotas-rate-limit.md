@@ -79,15 +79,15 @@ Código: [`MealQuotaService.ts`](../../src/application/services/MealQuotaService
 
 Feito em código, sem WAF: o decorator `@RateLimit` declara a regra no controller e o `lambdaHttpAdapter` checa antes de chamar o use case. É **janela fixa**: o contador zera no início de cada janela, e o `Retry-After` diz quantos segundos faltam para a próxima.
 
-| Rota | Por IP | Por e-mail | Por conta |
-|---|---|---|---|
+| Rota | Por IP | Por e-mail | Por conta | Por token |
+|---|---|---|---|---|
 | `POST /auth/sign-up` | 5 / 15 min | — | — |
 | `POST /auth/sign-in` | 10 / 15 min | 10 / 15 min | — |
 | `POST /auth/confirm-sign-up` | 10 / 15 min | 10 / 15 min | — |
 | `POST /auth/resend-confirmation-code` | 3 / 15 min | 3 / 15 min | — |
 | `POST /auth/forgot-password` | 5 / 15 min | 5 / 1 h | — |
 | `POST /auth/confirmation-forgot-password` | 10 / 15 min | — | — |
-| `POST /auth/refresh-token` | 60 / 15 min | — | — |
+| `POST /auth/refresh-token` | 300 / 15 min | — | — | 10 / 15 min |
 | `POST /auth/oauth/callback` | 30 / 15 min | — | — |
 | `POST /auth/complete-onboarding` | 30 / 15 min | — | — |
 | `POST /create-meal` | — | — | 10 / 1 h |
@@ -101,12 +101,16 @@ Feito em código, sem WAF: o decorator `@RateLimit` declara a regra no controlle
 | `POST /billing/cancel` | — | — | 10 / 1 h |
 | `POST /billing/webhooks/asaas` | 120 / 1 min | — | — |
 
-As rotas sem linha nesta tabela não têm rate limit em código.
+As rotas sem linha nesta tabela não têm rate limit em código. As linhas sem a coluna "Por token" não têm limite por token.
+
+**Por token** (`scope: 'token'`, só no `refresh-token`): a chave é o SHA-256 do `refreshToken` do corpo (`RL#token#POST /auth/refresh-token#token#<hash>`), então o token nunca é gravado em claro (o valor passa por `trim` antes, como no schema). Com a rotação do Cognito, cada token é usado uma vez no fluxo normal; 10 em 15 min só pega um cliente em loop. O limite por IP ficou folgado (300) porque, atrás de CGNAT de operadora, muitos usuários dividem o mesmo IP.
+
+**Throttling do stage**: além do rate limit em código, o stage `$default` do HTTP API tem `ThrottlingRateLimit: 50` e `ThrottlingBurstLimit: 100` em `DefaultRouteSettings` (`sls/resources/httpApiStage.yml`). O limite vale **por rota**, somando todos os usuários, e corta a request antes da Lambda. O webhook do Asaas tem o seu próprio limite, mas ele vale antes da allowlist de IP (que roda no código): uma rajada acima de 50 req/s de qualquer origem também barra os envios do Asaas, que repete e, depois de falhas seguidas, pausa a fila; a reconciliação horária cobre o que se perder. A resposta é `429` do API Gateway com corpo `{"message":"Too Many Requests"}`, sem o `{ error: { code } }` da API; o app trata `429` sem código como `RATE_LIMIT_EXCEEDED` ("Aguarde alguns instantes") e, no refresh, como falha passageira (não desloga). Precisa subir quando o uso de alguma rota se aproximar de 50 req/s (o `GET /meals/{id}` do polling é a primeira candidata).
 
 O rate limit roda **antes** da validação do corpo, então uma request com `400 VALIDATION` também gasta o limite. Ele é **fail-closed**: se o DynamoDB falhar, a resposta é `500`, não liberação.
 
 O rate limit conta **tentativas**, não sucessos: um `create-meal` que termina em `REJECTED` e um `meals/text` que dá `422 NO_FOOD_IDENTIFIED` também contam. Cada rota tem o próprio contador, então o `create-meal` e o `meals/text` não dividem o limite. O e-mail das regras por e-mail é normalizado (`trim` e minúsculas).
 
-O rate limit e a cota são coisas diferentes: o rate limit protege contra rajadas (e não devolve nada), a cota é o limite do plano (e é estornada quando a refeição não dá certo).
+O rate limit e a cota são coisas diferentes: o rate limit protege contra rajadas (e não devolve nada), a cota é o limite do plano (e é estornada quando a refeição não dá certo). O estorno de refeição `REJECTED` tem teto de 5 por dia por conta: da 6ª rejeição do dia em diante, a cota fica consumida (ver [teto de rejeições estornadas](fluxos/refeicao-foto-audio.md#retry-lease-e-estorno)).
 
 **Por que assim:** um WAF tem custo fixo (cerca de US$ 6 por mês, mais um valor por request inspecionado), enquanto o rate limit em código custa quase nada no volume atual. O WAF fica para quando o projeto escalar ou houver ataque contínuo. O DynamoDB já está na stack e faz o contador atômico sem servidor extra (sem Redis). A janela fixa com TTL é a forma mais simples: uma escrita por request, sem limpeza manual.

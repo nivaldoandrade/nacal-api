@@ -72,7 +72,7 @@ Todos publicam no tópico SNS `DQLAlarmTopic` (o nome é esse mesmo, com `DQL`, 
 | Alarme | Dispara quando | Significa | O que fazer |
 |---|---|---|---|
 | `MealsDLQAlarm` | Alguma mensagem na `MealsDLQ` | Uma refeição esgotou as 3 entregas sem conseguir nem marcar `FAILED` | Ver os logs da `processMeal` pelo `mealId` da mensagem. A refeição pode ter ficado presa sem estorno. |
-| `MealsQueueAgeAlarm` | Mensagem mais antiga da `MealsQueue` passa de 2 min, por 2 min seguidos | O processamento está atrasado ou parado | Ver erros e throttling da `processMeal` e a disponibilidade da OpenAI |
+| `MealsQueueAgeAlarm` | Mensagem mais antiga da `MealsQueue` passa de 2 min, por 2 min seguidos | O processamento está atrasado ou parado, ou a fila passou do que o `maximumConcurrency: 5` dá conta (uma rajada de ~20 refeições ou mais) | Ver erros e throttling da `processMeal`, a disponibilidade da OpenAI e a `ConcurrentExecutions` da `processMeal` (parada em 5 = limite do evento SQS) |
 | `MealUploadCheckDLQAlarm` | Alguma mensagem na `MealUploadCheckDLQ` | A checagem de 15 min falhou 3 vezes | Ver os logs da `checkMealUpload` e conferir a refeição e a cota na mão |
 | `ReconcilePaymentsErrorsAlarm` | Erro na Lambda `reconcilePayments` | A reconciliação não rodou | Ver os logs. Ela roda de novo na hora seguinte. |
 | `HttpApi5xxAlarm` | 3 ou mais respostas `5xx` do HTTP API em 5 min | Erro não tratado, `502` do Asaas ou do Cognito, Lambda com timeout | Ver [runbook de alertas](runbooks/alertas.md#httpapi5xxalarm) |
@@ -139,9 +139,10 @@ fields operation, usage.inputTokens, usage.cachedTokens, usage.outputTokens, usa
 
 | Item | Por quê |
 |---|---|
-| OpenAI | É o maior custo variável. Cotas e rate limit existem para limitar esse gasto. |
+| OpenAI | É o maior custo variável. Cotas, rate limit, o teto de 5 rejeições estornadas por dia por conta e o `maximumConcurrency: 5` da `processMeal` existem para limitar esse gasto. Para ver quantas rejeições ficaram sem estorno: Logs Insights na `processMeal` com `filter message = "meal rejected" | stats count() by refunded, reason`. |
 | Cloudflare Workers AI | Gate de foto. Barato, mas cobrado por chamada. |
 | GuardDuty | Grátis até 2026-12-12 em prod, depois cobrado. |
+| Throttling do HTTP API | `DefaultRouteSettings` com 50 req/s e burst de 100 **por rota** (`sls/resources/httpApiStage.yml`). Não custa nada, mas corta tráfego legítimo se o uso crescer: conferir a métrica `Count` por rota antes de chegar perto e subir o valor. O `429` do stage aparece no access log (`status: 429`), sem linha `http request` da Lambda. |
 | CloudWatch Logs | Ingestão por GB. Retenção de 30 dias (`logRetentionInDays`); as linhas por request e o access log crescem com o tráfego. |
 | CloudWatch (alarmes e métricas) | 8 alarmes e 2 métricas EMF (`MealFailed`, `WebhookNon2xx`) custam centavos por mês. |
 

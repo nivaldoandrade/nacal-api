@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   APIGatewayProxyEventV2,
   APIGatewayProxyEventV2WithJWTAuthorizer,
@@ -238,6 +240,13 @@ function resolveRateLimitKey(
     case 'email': {
       const email = request.body?.[rule.field ?? 'email'];
       return typeof email === 'string' ? `${event.routeKey}#email#${email.trim().toLowerCase()}` : undefined;
+    }
+    case 'token': {
+      const token = request.body?.[rule.field ?? 'token'];
+      const normalizedToken = typeof token === 'string' ? token.trim() : '';
+      return normalizedToken
+        ? `${event.routeKey}#token#${createHash('sha256').update(normalizedToken).digest('hex')}`
+        : undefined;
     }
     default:
       return undefined;

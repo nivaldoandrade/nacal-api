@@ -437,6 +437,7 @@ export class MealRepository {
     meal,
     reason,
     gateScore,
+    refundLimit,
   }: MealRepository.RejectAndRefundParams): Promise<MealRepository.RejectAndRefundResult> {
     if (!meal.quotaMonth) {
       const rejected = await this.markRejected({
@@ -484,6 +485,16 @@ export class MealRepository {
           quotaMonth: meal.quotaMonth,
           quotaDay: meal.quotaDay,
         }),
+        {
+          Update: {
+            TableName: this.config.db.dynamodb.rateLimitTable,
+            ...RateLimitRepository.buildQuotaCounterIncrement({
+              scope: 'account-rejections',
+              key: meal.accountId,
+              ...refundLimit,
+            }),
+          },
+        },
       ],
     });
 
@@ -820,7 +831,7 @@ namespace MealRepository {
   }
 
   export type QuotaRefundItem = {
-    Update: RateLimitRepository.QuotaCounterDecrement & {
+    Update: RateLimitRepository.QuotaCounterUpdate & {
       TableName: string;
     };
   }
@@ -855,6 +866,13 @@ namespace MealRepository {
     meal: Meal;
     reason: Meal.RejectionReason;
     gateScore?: number | null;
+    refundLimit: RefundLimit;
+  }
+
+  export type RefundLimit = {
+    bucket: string;
+    expiresAt: number;
+    limit: number;
   }
 
   export type RejectAndRefundResult = {

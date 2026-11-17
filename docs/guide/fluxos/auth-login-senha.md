@@ -7,7 +7,7 @@ Login com e-mail e senha, renovação do token e recuperação de senha. A API �
 | Ação | Rota | Rate limit |
 |---|---|---|
 | Login | `POST /auth/sign-in` | 10 por IP e 10 por e-mail a cada 15 min |
-| Renovar token | `POST /auth/refresh-token` | 60 por IP a cada 15 min |
+| Renovar token | `POST /auth/refresh-token` | 300 por IP e 10 por token (SHA-256) a cada 15 min |
 | Pedir código de nova senha | `POST /auth/forgot-password` | 5 por IP a cada 15 min e 5 por e-mail por hora |
 | Definir nova senha | `POST /auth/confirmation-forgot-password` | 10 por IP a cada 15 min |
 | Dados do usuário | 🔒 `GET /me` | — |

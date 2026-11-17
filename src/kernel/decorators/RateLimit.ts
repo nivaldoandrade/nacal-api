@@ -1,6 +1,6 @@
 
 export type RateLimitRule = {
-  scope: 'ip' | 'account' | 'email';
+  scope: 'ip' | 'account' | 'email' | 'token';
   field?: string;
   limit: number;
   windowSeconds: number;

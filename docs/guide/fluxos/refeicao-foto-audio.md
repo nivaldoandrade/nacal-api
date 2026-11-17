@@ -9,8 +9,9 @@ O app pede à API uma autorização de upload, manda o arquivo **direto para o S
 | **Entrada** | `POST /create-meal` 🔒 |
 | **Acompanhamento** | `GET /meals/{id}` 🔒, polling a cada 3 s enquanto o status está em andamento |
 | **Lambdas** | `createMeal` → `newMealUploadedTrigger` → `processMeal` (+ `checkMealUpload` após 15 min) |
-| **Tipos aceitos** | `image/jpeg` (até 10 MB) · `audio/m4a` e `audio/webm` (até 2 MB, de 1 a 32 s) |
+| **Tipos aceitos** | `image/jpeg` (até 2 MB, maior lado até 4096 px e até 16 MP) · `audio/m4a` e `audio/webm` (até 2 MB, de 1 a 32 s) |
 | **Rate limit** | 10 criações por hora por conta |
+| **Teto de estornos** | 5 rejeições estornadas por dia por conta (fuso de São Paulo); da 6ª em diante, a rejeição fica com a cota |
 
 ## Visão de ponta a ponta
 
@@ -67,9 +68,9 @@ sequenceDiagram
         CF-->>P: score de 0 a 1, abaixo de 0.30 rejeita
     end
     alt é foto
-        P->>AI: gpt-5.4-mini com a URL da CDN e a description
+        P->>AI: gpt-5.4-mini com a foto validada (base64) e a description
     else é áudio
-        P->>AI: gpt-4o-transcribe
+        P->>AI: gpt-4o-transcribe com o áudio validado
         P->>AI: gpt-5.4-mini com a transcrição
     end
     AI-->>P: alimentos, mealType e unidentified
@@ -159,7 +160,7 @@ flowchart TD
 
 ### 1. Criação (`POST /create-meal`)
 
-1. O `@Schema(createMealSchema)` valida o corpo: `contentType` é um dos 3 MIME types, `fileSize` respeita o limite do tipo (10 MB para foto, 2 MB para áudio), `description` tem até 300 caracteres e **só é aceita para foto**.
+1. O `@Schema(createMealSchema)` valida o corpo: `contentType` é um dos 3 MIME types, `fileSize` tem até 2 MB (foto e áudio), `description` tem até 300 caracteres e **só é aceita para foto**.
 2. O `CreateMealUseCase` descobre o plano efetivo (`Subscription.resolveEffectivePlan`) e **consome a cota** no `MealQuotaService` com um incremento condicional na `RateLimitTable`:
    - **Free**: contador mensal `RL#account-monthly#<accountId>` / `AAAA-MM`, limite 20.
    - **Pro**: contador diário no fuso de São Paulo, limite 20, mais um contador mensal com sufixo `#PRO` (sem limite, só para contar).
@@ -184,7 +185,7 @@ Resposta `201`: `{ mealId, uploadSignature }`. O `uploadSignature` é o Presigne
 
 **Reivindicação com lease.** `claimForProcessing` é um `UpdateItem` condicional: passa para `PROCESSING`, grava `leaseExpiresAt = agora + 130 s` e soma 1 em `attempts`, **só se** a refeição estiver `QUEUED` (ou `PROCESSING` com o lease vencido) e com `attempts < 2`. Isso impede duas Lambdas de processarem a mesma refeição quando o SQS entrega a mensagem duas vezes.
 
-**Validação do arquivo** (`MealFileValidationService`): confere a assinatura real do arquivo (magic bytes), não a extensão. Para foto, JPEG de verdade (`FF D8 FF`), tamanho e dimensões (o app converte outros formatos para JPEG antes do upload). Para áudio, tamanho e duração de 1 a 32 s, lida com o `music-metadata`. O WebM gravado pelo Safari (iPhone e Mac) não traz a duração no cabeçalho, então ela é calculada pelo timecode do último bloco (`src/shared/utils/getWebmDurationSeconds.ts`). Arquivo inválido vira `REJECTED` com `INVALID_FILE`.
+**Validação do arquivo** (`MealFileValidationService`): confere a assinatura real do arquivo (magic bytes), não a extensão. Para foto, JPEG de verdade (`FF D8 FF`), até 2 MB, maior lado até 4096 px e até 16 MP (o app converte outros formatos para JPEG e reduz o maior lado para 1024 px antes do upload). Com esses limites, toda foto válida cabe no gate. Para áudio, tamanho e duração de 1 a 32 s, lida com o `music-metadata`. O WebM gravado pelo Safari (iPhone e Mac) não traz a duração no cabeçalho, então ela é calculada pelo timecode do último bloco (`src/shared/utils/getWebmDurationSeconds.ts`). Arquivo inválido vira `REJECTED` com `INVALID_FILE`.
 
 **Gate de foto** (`MealGateGateway`): manda a imagem ao modelo `clef-flash` da Cloudflare, com timeout de 8 s. Score abaixo de `MEAL_GATE_REJECT_THRESHOLD` (0.30) vira `REJECTED` com `NOT_A_MEAL`. **Falha aberta**: se o gate estiver desligado, sem credenciais, com a imagem grande demais (mais de 4 MB ou 16 MP), com erro HTTP, com resposta inválida ou com timeout, a decisão é `SKIP` e a foto segue para a OpenAI.
 
@@ -192,10 +193,10 @@ Configuração do gate: `CLOUDFLARE_ACCOUNT_ID` e `CLOUDFLARE_AI_API_TOKEN` (tok
 
 **IA** (`MealAiGateway`):
 
-- **Foto**: o `gpt-5.4-mini` recebe a **URL da CDN** (a OpenAI baixa a imagem) e, se existir, a `description` dentro de `<user_note>`, com `<` e `>` neutralizados para a nota ser tratada como dado, não como instrução.
-- **Áudio**: o arquivo é baixado pela CDN, transcrito pelo `gpt-4o-transcribe` e a transcrição vai para o `gpt-5.4-mini` com o prompt de texto (variante de áudio). Transcrição vazia vira `REJECTED` com `NO_FOOD_DETECTED`.
+- **Foto**: o `gpt-5.4-mini` recebe **o mesmo buffer que foi validado**, em base64 (`data:image/jpeg;base64,...`), e não a URL da CDN: o arquivo não pode ser trocado entre a validação e a leitura, e um cache antigo da CDN não entra na análise. Com `detail: high`, a OpenAI reescala a imagem, então uma foto maior não custa mais tokens. Se existir, a `description` vai dentro de `<user_note>`, com `<` e `>` neutralizados para a nota ser tratada como dado, não como instrução.
+- **Áudio**: o buffer já validado é transcrito pelo `gpt-4o-transcribe` (sem baixar de novo pela CDN) e a transcrição vai para o `gpt-5.4-mini` com o prompt de texto (variante de áudio). Transcrição vazia vira `REJECTED` com `NO_FOOD_DETECTED`.
 - A saída é estruturada (zod): alimentos com nome, quantidade e macros, o `mealType` declarado e o `unidentified`. Alimentos marcados como não identificados são removidos (log `unidentified foods removed`). Na foto, um `unidentified: DRINK` é descartado quando a descrição já cita uma bebida que entrou nos alimentos (quantidade em ml e uma palavra do nome presente na descrição; log `unidentified drink explained by note`). Se não sobrar nenhum, vira `REJECTED` com `NO_FOOD_DETECTED`.
-- **Tempos**: todo o trabalho da OpenAI de uma refeição (download do áudio, transcrição e análise, com os retries) tem um **prazo único de 90 s**, passado como `signal` a cada chamada. Dentro dele: análise com timeout de 45 s e 1 retry, transcrição com 30 s e 1 retry, download do áudio com 15 s. Somados à leitura do S3 e ao gate (até 8 s), cabem nos 120 s da Lambda com folga para gravar o resultado. O prazo também corta a espera de um `Retry-After` longo da OpenAI (o SDK obedece o header sem limite e a espera não olha o `signal`, então cada chamada corre contra o prazo num `Promise.race`). Estourou o prazo: a chamada é abortada e a refeição segue o caminho de erro (retry ou `FAILED` com estorno), em vez de a Lambda morrer sem marcar nada.
+- **Tempos**: todo o trabalho da OpenAI de uma refeição (transcrição e análise, com os retries) tem um **prazo único de 90 s**, passado como `signal` a cada chamada. Dentro dele: análise com timeout de 45 s e 1 retry, transcrição com 30 s e 1 retry. Somados à leitura do S3 e ao gate (até 8 s), cabem nos 120 s da Lambda com folga para gravar o resultado. O prazo também corta a espera de um `Retry-After` longo da OpenAI (o SDK obedece o header sem limite e a espera não olha o `signal`, então cada chamada corre contra o prazo num `Promise.race`). Estourou o prazo: a chamada é abortada e a refeição segue o caminho de erro (retry ou `FAILED` com estorno), em vez de a Lambda morrer sem marcar nada.
 - **Parâmetros**: `store: false` (a OpenAI não guarda a resposta; ela não aparece nos logs do painel da OpenAI) e `max_output_tokens: 4096`, que inclui os tokens de raciocínio. Resposta cortada (`status: incomplete`, ex.: `max_output_tokens`) vira erro e segue o mesmo caminho de erro. Texto e "adicionar itens" usam os mesmos parâmetros, com timeout de 12 s, 1 retry e prazo total de 25 s (a Lambda tem 29 s).
 - **Uso**: cada chamada loga `openai response` com `mealId`, `operation` (`PICTURE`, `AUDIO`, `TEXT` ou `ADD_ITEMS`), `responseStatus`, `durationMs` e `usage` (`inputTokens`, `cachedTokens`, `outputTokens`, `reasoningTokens`, `totalTokens`). A transcrição loga `openai transcription` com o `usage` devolvido pela OpenAI.
 
@@ -248,6 +249,10 @@ gantt
 **Por que três entregas para duas tentativas?** Se a Lambda morrer no meio da 2ª tentativa (timeout ou falta de memória), ninguém marca `FAILED`. A 3ª entrega encontra `attempts = 2` e o lease vencido e chama `failAndRefund`. Se a 3ª entrega também falhar, a mensagem vai para a `MealsDLQ` e, em prod, o alarme manda e-mail.
 
 **Estorno atômico.** `failAndRefund` e `rejectAndRefund` usam uma `TransactWriteItems` que, juntos, mudam o status da refeição (condicionado ao status lido) e decrementam os contadores de cota (mês e, no Pro, dia), no bucket gravado na refeição, mesmo que o estorno aconteça no dia seguinte. O `ClientRequestToken` (`<mealId>#fail#<attempts>`, `<mealId>#reject#<attempts>` ou `<mealId>#upload` para a refeição presa em `UPLOADING`) torna a transação idempotente sem colidir com outra operação da mesma refeição. O DynamoDB aceita até 36 caracteres nesse token. A flag `quotaRefunded` registra se o estorno aconteceu: se o contador já estiver zerado, a refeição muda de status sem estorno.
+
+**Teto de rejeições estornadas.** A transação do `rejectAndRefund` também soma 1 no contador `RL#account-rejections#<accountId>` / `AAAA-MM-DD` (dia de São Paulo, TTL de 15 dias), com a condição `count < 5` (`MealQuotaService.DAILY_REFUNDED_REJECTIONS_LIMIT`). Na 6ª rejeição do dia a condição falha, a transação é cancelada e o `markRejected` grava `REJECTED` com `quotaRefunded: false`: a refeição fica com a cota. Vale para Free e Pro e para todos os motivos (`NOT_A_MEAL`, `NO_FOOD_DETECTED`, `INVALID_FILE`). Não há erro novo nem texto novo no app: o usuário vê a mesma mensagem de rejeição, e a cota mostrada na Home já reflete o consumo. Sem o teto, um Free com 1 refeição de saldo conseguia repetir 10 tentativas por hora (cerca de 240 por dia) sem gastar cota, cada uma com o gate e, se passasse, uma chamada de visão. Agora o máximo por dia é 5 mais a cota que ainda resta. O `meal rejected` loga `refunded`. A falha (`FAILED`) continua sempre estornada e não entra no contador. O texto e o adicionar itens não entram: não consomem cota quando não acham alimento, mas são chamadas de texto (baratas) com limite por hora.
+
+**Concorrência limitada.** O evento SQS tem `maximumConcurrency: 5`: no máximo 5 execuções da `processMeal` ao mesmo tempo (até 10 refeições, com o lote de 2). Numa rajada, o resto espera na fila sem ser recebido, então o `VisibilityTimeout` e o lease não andam enquanto esperam, e a OpenAI não recebe dezenas de chamadas em paralelo (cada foto tem ~4,5 mil tokens de entrada; o 429 viraria retry e depois `FAILED`). Uma fila maior que ~20 refeições pode passar dos 2 min e disparar o `MealsQueueAgeAlarm`, que é o sinal de que o limite precisa subir. O `maximumConcurrency` não gera throttle da Lambda (o `ProcessMealThrottlesAlarm` continua só para o limite da conta).
 
 **Lote de 2 com retorno parcial.** A `processMeal` recebe até 2 mensagens por vez. O `lambdaSQSAdapter` processa as duas com `Promise.allSettled` e espera as duas terminarem; as que lançaram erro vão no `batchItemFailures` (o evento usa `functionResponseType: ReportBatchItemFailures`) e só elas voltam para a fila, depois do `VisibilityTimeout`. A outra é apagada normalmente. O erro de cada mensagem vai para o log (`sqs message failed`, com `messageId` e `receiveCount`). O `checkMealUpload` usa o mesmo adapter, com lotes de até 10. Como o adapter não lança, o `Errors` da Lambda fica zerado: a falha que importa é medida pela métrica `MealFailed` (abaixo).
 

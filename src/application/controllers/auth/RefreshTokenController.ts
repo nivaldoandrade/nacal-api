@@ -7,7 +7,8 @@ import { Schema } from '@kernel/decorators/Schema';
 
 @Injectable()
 @Schema(refreshTokenSchema)
-@RateLimit({ scope: 'ip', limit: 60, windowSeconds: 900 })
+@RateLimit({ scope: 'ip', limit: 300, windowSeconds: 900 })
+@RateLimit({ scope: 'token', field: 'refreshToken', limit: 10, windowSeconds: 900 })
 export class RefreshTokenController extends Controller<'public'> {
 
   constructor(private readonly refreshTokenUseCase: RefreshTokenUseCase) {

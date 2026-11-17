@@ -8,8 +8,6 @@ import { MealNamingService } from '@application/services/MealNamingService';
 import { getAddItemsPrompt } from '@infra/ai/prompts/getAddItemsPrompt';
 import { getImagePrompt } from '@infra/ai/prompts/getImagePrompt';
 import { getTextMealPrompt } from '@infra/ai/prompts/getTextMealPrompt';
-import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
-import { downloadByURL } from '@infra/utils/downloadByURL';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { logger } from '@shared/logger/logger';
 
@@ -55,8 +53,6 @@ const ASYNC_ANALYSIS_TIMEOUT_MS = 45_000;
 
 const ASYNC_TRANSCRIPTION_TIMEOUT_MS = 30_000;
 
-const ASYNC_DOWNLOAD_TIMEOUT_MS = 15_000;
-
 const NOTE_STOP_WORDS = new Set([
   'com', 'sem', 'que', 'uma', 'uns', 'umas', 'para', 'pra', 'por', 'meu', 'minha', 'mais', 'tipo', 'sabor', 'marca',
   'copo', 'xicara', 'caneca', 'lata', 'garrafa', 'zero', 'acucar', 'natural', 'gelado', 'quente',
@@ -71,17 +67,13 @@ const textMealSchema = z.object({
 export class MealAiGateway {
   private readonly client = new OpenAI();
 
-  constructor(
-    private readonly mealFileStorageGateway: MealFileStorageGateway,
-  ) { }
-
-  async processMeal(meal: Meal): Promise<MealAiGateway.ProcessMeal['result']> {
+  async processMeal({ meal, file }: MealAiGateway.ProcessMeal['params']): Promise<MealAiGateway.ProcessMeal['result']> {
     const signal = AbortSignal.timeout(ASYNC_DEADLINE_MS);
 
     try {
       const processedMeal = meal.inputType === Meal.InputType.PICTURE
-        ? await this.processMealByImage(meal, signal)
-        : await this.processMealByAudio(meal, signal);
+        ? await this.processMealByImage(meal, file, signal)
+        : await this.processMealByAudio(meal, file, signal);
 
       return processedMeal;
     } catch (error) {
@@ -94,11 +86,16 @@ export class MealAiGateway {
 
   }
 
-  private async processMealByImage(meal: Meal, signal: AbortSignal): Promise<MealAiGateway.ProcessMeal['result']> {
+  private async processMealByImage(
+    meal: Meal,
+    file: Buffer,
+    signal: AbortSignal,
+  ): Promise<MealAiGateway.ProcessMeal['result']> {
+    const { mimeType } = Meal.getInputFileByKey(meal.requireInputFileKey());
     const userContent: OpenAI.Responses.ResponseInputMessageContentList = [
       {
         type: 'input_image',
-        image_url: this.mealFileStorageGateway.getFileURL(meal.requireInputFileKey()),
+        image_url: `data:${mimeType};base64,${file.toString('base64')}`,
         detail: 'high',
       },
     ];
@@ -257,8 +254,12 @@ export class MealAiGateway {
     }
   }
 
-  private async processMealByAudio(meal: Meal, signal: AbortSignal): Promise<MealAiGateway.ProcessMeal['result']> {
-    const audioTranscript = await this.transcribe(meal, signal);
+  private async processMealByAudio(
+    meal: Meal,
+    file: Buffer,
+    signal: AbortSignal,
+  ): Promise<MealAiGateway.ProcessMeal['result']> {
+    const audioTranscript = await this.transcribe(meal, file, signal);
 
     const { mealType, foods } = await this.extractMealFromNote({
       mealId: meal.id,
@@ -316,13 +317,8 @@ export class MealAiGateway {
     return { mealType, foods, unidentifiedFoods };
   }
 
-  private async transcribe(meal: Meal, signal: AbortSignal): Promise<string> {
-    const inputFileKey = meal.requireInputFileKey();
-    const audioUrl = this.mealFileStorageGateway.getFileURL(inputFileKey);
-    const audioBuffer = await downloadByURL(audioUrl, {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(ASYNC_DOWNLOAD_TIMEOUT_MS)]),
-    });
-    const inputFile = Meal.getInputFileByKey(inputFileKey);
+  private async transcribe(meal: Meal, audioBuffer: Buffer, signal: AbortSignal): Promise<string> {
+    const inputFile = Meal.getInputFileByKey(meal.requireInputFileKey());
     const startedAt = Date.now();
 
     const transcription = await MealAiGateway.withDeadline(
@@ -551,6 +547,10 @@ export namespace MealAiGateway {
   }
 
   export type ProcessMeal = {
+    params: {
+      meal: Meal;
+      file: Buffer;
+    };
     result: {
       mealType: MealType;
       foods: Food[];

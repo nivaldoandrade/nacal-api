@@ -5,7 +5,9 @@ import { getWebmDurationSeconds } from '@shared/utils/getWebmDurationSeconds';
 import { imageSize } from 'image-size';
 import { parseBuffer } from 'music-metadata';
 
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION = 4096;
+const MAX_IMAGE_PIXELS = 16_000_000;
 const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
 const MIN_AUDIO_DURATION_SECONDS = 1;
 const MAX_AUDIO_DURATION_SECONDS = 32;
@@ -40,6 +42,13 @@ export class MealFileValidationService {
       const dimensions = imageSize(file);
 
       if (!dimensions.width || !dimensions.height) {
+        throw new MealRejectedError(Meal.RejectionReason.INVALID_FILE);
+      }
+
+      if (
+        Math.max(dimensions.width, dimensions.height) > MAX_IMAGE_DIMENSION
+        || dimensions.width * dimensions.height > MAX_IMAGE_PIXELS
+      ) {
         throw new MealRejectedError(Meal.RejectionReason.INVALID_FILE);
       }
 
