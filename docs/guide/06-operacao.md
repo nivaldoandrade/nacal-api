@@ -126,6 +126,16 @@ fields operation, usage.inputTokens, usage.cachedTokens, usage.outputTokens, usa
 
 Como ler: `maxOutput` deve ficar bem abaixo do `max_output_tokens` (2048; 30 itens, o máximo do schema, dão ~1.100–1.200), e `maxReasoning` em 0 (`reasoning.effort: none`). Se aparecer `responseStatus` `incomplete`, o motivo está no `incompleteReason` da mesma linha (ex.: `max_output_tokens`), e o erro da tentativa sai como `OPEN AI incomplete response`. `cached` baixo em relação a `input` com tráfego espaçado é esperado: o cache da OpenAI expira com 5–10 min sem uso. Preço do `gpt-5.4-mini` (2026-11-17, por milhão de tokens): US$ 0,75 de entrada, US$ 0,075 de entrada em cache e US$ 4,50 de saída; uma foto custa ~US$ 0,0043 sem cache e ~US$ 0,0019 com o prompt em cache.
 
+Cold start, duração e memória por função (selecione os grupos `/aws/lambda/nacal-api-<stage>-<função>` que quiser comparar):
+
+```text
+filter @type = "REPORT"
+| parse @log /nacal-api-[a-z]+-(?<fn>[A-Za-z]+)$/
+| stats count(*) as n, count(@initDuration) as cold, pct(@initDuration, 50) as init50, pct(@initDuration, 90) as init90, pct(@duration, 50) as d50, pct(@duration, 90) as d90, max(@maxMemoryUsed) / 1000000 as maxMemMB, max(@memorySize) / 1000000 as sizeMB by fn
+```
+
+Como ler: `maxMemMB` perto de `sizeMB` é risco de estourar a memória; foi o motivo de subir o padrão de 128 para 256 MB (tabela de memória em [01-visao-geral.md](01-visao-geral.md)). O `@initDuration` só aparece nas invocações com cold start (`cold`).
+
 ## Runbooks e scripts
 
 | Tarefa | Onde |

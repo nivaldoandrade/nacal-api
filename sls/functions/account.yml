@@ -1,5 +1,6 @@
 me:
   handler: src/main/functions/account/me.handler
+  memorySize: 512
   iam:
     role:
       statements:

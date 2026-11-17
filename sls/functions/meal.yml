@@ -1,5 +1,6 @@
 createMeal:
   handler: src/main/functions/meal/createMeal.handler
+  memorySize: 512
   iam:
     role:
       statements:
@@ -16,6 +17,7 @@ createMeal:
           name: CognitoAuthorizer
 listMeal:
   handler: src/main/functions/meal/listMeal.handler
+  memorySize: 512
   iam:
     role:
       statements:
@@ -28,6 +30,7 @@ listMeal:
           name: CognitoAuthorizer
 getMealById:
   handler: src/main/functions/meal/getMealById.handler
+  memorySize: 512
   iam:
     role:
       statements:

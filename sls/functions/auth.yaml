@@ -17,6 +17,7 @@ signUp:
 
 signIn:
   handler: src/main/functions/auth/signIn.handler
+  memorySize: 512
   environment:
     COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
   iam:
@@ -62,6 +63,7 @@ resendConfirmationCode:
 
 refreshToken:
   handler: src/main/functions/auth/refreshToken.handler
+  memorySize: 512
   environment:
     COGNITO_CLIENT_SECRET: !GetAtt UserPoolClient.ClientSecret
   iam:

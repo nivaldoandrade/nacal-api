@@ -38,6 +38,10 @@ export class MealQuotaService {
       return {
         quotaMonth: month.bucket,
         quotaDay: null,
+        usage: {
+          mealQuota: MealQuotaService.toQuota(used, MealQuotaService.FREE_MONTHLY_LIMIT),
+          dailyMealQuota: null,
+        },
       };
     }
 
@@ -56,9 +60,10 @@ export class MealQuotaService {
     }
 
     const quotaMonth = MealQuotaService.getProMonthBucket(month.bucket);
+    let usedThisMonth: number | null;
 
     try {
-      await this.rateLimitRepository.incrementQuotaCounter({
+      usedThisMonth = await this.rateLimitRepository.incrementQuotaCounter({
         scope: 'account-monthly',
         key: accountId,
         bucket: quotaMonth,
@@ -85,6 +90,10 @@ export class MealQuotaService {
     return {
       quotaMonth,
       quotaDay: day.bucket,
+      usage: {
+        mealQuota: MealQuotaService.toQuota(usedThisMonth ?? 0, null),
+        dailyMealQuota: MealQuotaService.toQuota(usedToday, MealQuotaService.PRO_DAILY_LIMIT),
+      },
     };
   }
 
@@ -221,6 +230,7 @@ export namespace MealQuotaService {
   export type ConsumeResult = {
     quotaMonth: string;
     quotaDay: string | null;
+    usage: Usage;
   }
 
   export type RejectionRefundLimit = {

@@ -7,7 +7,7 @@ O app pede à API uma autorização de upload, manda o arquivo **direto para o S
 | | |
 |---|---|
 | **Entrada** | `POST /create-meal` 🔒 |
-| **Acompanhamento** | `GET /meals/{id}` 🔒, polling a cada 3 s enquanto o status está em andamento |
+| **Acompanhamento** | `GET /meals/{id}` 🔒, polling enquanto o status está em andamento: 2 s nos primeiros 20 s, depois intervalo crescente até 10 s, e para em 3 min |
 | **Lambdas** | `createMeal` → `newMealUploadedTrigger` → `processMeal` (+ `checkMealUpload` após 15 min) |
 | **Tipos aceitos** | `image/jpeg` (até 2 MB, maior lado até 4096 px e até 16 MP) · `audio/m4a` e `audio/webm` (até 2 MB, de 1 a 32 s) |
 | **Rate limit** | 10 criações por hora por conta |
@@ -41,7 +41,7 @@ sequenceDiagram
     C->>C: gera o Presigned POST, válido por 5 min
     C->>CQ: publica a checagem, com atraso de 15 min
     C->>DB: cria a refeição com status UPLOADING
-    C-->>U: 201 com mealId e uploadSignature
+    C-->>U: 201 com mealId, uploadSignature e a cota atualizada
     end
 
     rect rgba(100, 200, 120, 0.08)
@@ -53,7 +53,7 @@ sequenceDiagram
     T->>MQ: publica accountId e mealId
     end
 
-    loop a cada 3 s enquanto UPLOADING, QUEUED ou PROCESSING
+    loop 2 s nos primeiros 20 s, depois até 10 s, por até 3 min, enquanto UPLOADING, QUEUED ou PROCESSING
         U->>C: GET /meals/{id}, leitura consistente
     end
 
@@ -169,7 +169,7 @@ flowchart TD
 5. Grava a refeição com `status: UPLOADING`, guardando `quotaMonth` e `quotaDay` para saber o que estornar depois.
 6. Se qualquer passo de 3 a 5 falhar, a cota é estornada e a resposta é `500`.
 
-Resposta `201`: `{ mealId, uploadSignature }`. O `uploadSignature` é o Presigned POST (URL + campos) em base64.
+Resposta `201`: `{ mealId, uploadSignature, mealQuota, dailyMealQuota }`. O `uploadSignature` é o Presigned POST (URL + campos) em base64. `mealQuota` e `dailyMealQuota` têm o mesmo formato do `GET /me` (`{ used, limit, remaining }`; `dailyMealQuota` é `null` no Free) e saem dos próprios incrementos do `consume` (`ReturnValues: UPDATED_NEW`), sem leitura a mais. O app atualiza a cota em cache (`setQueryData(['accounts'])`) em vez de refazer o `GET /me`.
 
 ### 2. Upload e enfileiramento (`newMealUploadedTrigger`)
 
@@ -219,7 +219,12 @@ O mesmo fuso define o **dia** da refeição no `GSI1PK`. Os dois cálculos usam 
 
 ### 4. Acompanhamento (`GET /meals/{id}`)
 
-O app consulta a cada 3 s enquanto o status for `UPLOADING`, `QUEUED` ou `PROCESSING` (`app/src/app/hooks/queries/useGetMealById.ts`). A leitura é consistente (`ConsistentRead`), para não mostrar um status antigo.
+O app consulta enquanto o status for `UPLOADING`, `QUEUED` ou `PROCESSING` (`app/src/app/hooks/queries/useGetMealById.ts`), contando o tempo a partir do fim do upload: a cada 2 s nos primeiros 20 s, depois com o intervalo multiplicado por 1,5 até 10 s (3 s, 4,5 s, 6,75 s, 10 s...), e para em 3 min. A leitura é consistente (`ConsistentRead`), para não mostrar um status antigo.
+
+- **Caso normal**: a `processMeal` leva 3,5 s (p50) e 5,3 s (p90) (medido em 2026-11-17), então são 3 a 5 consultas por refeição.
+- **Refeição presa**: no máximo ~28 consultas em 3 min. Antes, o polling a cada 3 s não tinha limite e o loader de tela cheia prendia o usuário até o `FAILED` da checagem de 15 min (até ~300 consultas).
+- **No limite**: o app faz uma última consulta (o timer dos 3 min corre mesmo com a aba oculta ou o app em segundo plano, quando o polling fica parado) e, se a refeição terminou, segue o fluxo normal. Se ainda estiver em andamento, o modal fecha com o toast "Sua refeição está demorando mais que o normal. Ela vai aparecer na sua lista assim que ficar pronta." e a lista do dia e a query da refeição são marcadas como desatualizadas sem nova busca (`invalidateQueries` com `refetchType: 'none'`). A marca da lista sobrevive a uma inserção posterior no cache (`insertMealIntoDayList` a refaz). Ela é buscada de novo quando o app volta ao foco (web) ou no gesto de puxar (nativo). Se a refeição terminar em `FAILED` depois disso, a cota é estornada no servidor e nada aparece na lista.
+- **No `SUCCESS`**: o app insere a refeição na lista do dia em cache (`insertMealIntoDayList`, ordenada por `createdAt`), sem refazer o `GET /meals`. A lista só traz refeições em `SUCCESS`.
 
 ## Retry, lease e estorno
 

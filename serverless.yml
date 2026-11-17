@@ -12,7 +12,7 @@ provider:
   name: aws
   runtime: nodejs24.x
   architecture: arm64
-  memorySize: 128
+  memorySize: 256
   region: sa-east-1
   logRetentionInDays: 30
   logs:

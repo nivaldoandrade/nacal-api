@@ -43,7 +43,7 @@ export class CreateTextMealUseCase {
       throw new NoFoodIdentified();
     }
 
-    const { quotaMonth, quotaDay } = await this.mealQuotaService.consume({ accountId, plan });
+    const { quotaMonth, quotaDay, usage } = await this.mealQuotaService.consume({ accountId, plan });
 
     const meal = new Meal({
       id: mealId,
@@ -75,6 +75,7 @@ export class CreateTextMealUseCase {
     return {
       meal: this.mealPresenter.toOutput(meal),
       unidentifiedFoodsCount: unidentifiedCount,
+      ...usage,
     };
   }
 
@@ -103,7 +104,7 @@ export namespace CreateTextMealUseCase {
     text: string;
   }
 
-  export type Output = {
+  export type Output = MealQuotaService.Usage & {
     meal: MealPresenter.Output;
     unidentifiedFoodsCount: number;
   }

@@ -24,7 +24,7 @@ export class CreateMealUseCase {
     const subscription = await this.subscriptionRepository.findByAccountId(accountId);
     const plan = Subscription.resolveEffectivePlan(subscription);
 
-    const { quotaMonth, quotaDay } = await this.mealQuotaService.consume({ accountId, plan });
+    const { quotaMonth, quotaDay, usage } = await this.mealQuotaService.consume({ accountId, plan });
 
     try {
       const mealId = generateUniqueId();
@@ -61,6 +61,7 @@ export class CreateMealUseCase {
       return {
         mealId,
         uploadSignature,
+        ...usage,
       };
     } catch (error) {
       try {
@@ -86,7 +87,7 @@ export namespace CreateMealUseCase {
     }
   }
 
-  export type Output = {
+  export type Output = MealQuotaService.Usage & {
     mealId: string;
     uploadSignature: string;
   }

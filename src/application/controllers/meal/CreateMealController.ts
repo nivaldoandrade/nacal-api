@@ -1,6 +1,7 @@
 import { Controller } from '@application/contracts/Controller';
 import { CreateMealBody, createMealSchema } from '@application/controllers/meal/schemas/createMealSchema';
 import { Meal } from '@application/entities/Meal';
+import { MealQuotaService } from '@application/services/MealQuotaService';
 import { CreateMealUseCase } from '@application/useCases/meal/CreateMealUseCase';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { RateLimit } from '@kernel/decorators/RateLimit';
@@ -24,6 +25,8 @@ export class CreateMealController extends Controller<'private'> {
     const {
       mealId,
       uploadSignature,
+      mealQuota,
+      dailyMealQuota,
     } = await this.createMealUseCase.execute({
       accountId,
       timeZone,
@@ -40,6 +43,8 @@ export class CreateMealController extends Controller<'private'> {
       body: {
         mealId,
         uploadSignature,
+        mealQuota,
+        dailyMealQuota,
       },
     };
   }
@@ -47,7 +52,7 @@ export class CreateMealController extends Controller<'private'> {
 }
 
 namespace CreateMealController {
-  export type Response = {
+  export type Response = MealQuotaService.Usage & {
     mealId: string;
     uploadSignature: string;
   }

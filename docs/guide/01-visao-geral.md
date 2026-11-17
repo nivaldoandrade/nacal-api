@@ -174,7 +174,7 @@ São 32 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um
 | Item | Valor |
 |---|---|
 | Runtime | Node.js 24, arm64 |
-| Memória e timeout | Padrão: 128 MB (`provider.memorySize`) e 6 s (padrão do Serverless, sem `timeout` no provider). Exceções na tabela abaixo. |
+| Memória e timeout | Padrão: 256 MB (`provider.memorySize`) e 6 s (padrão do Serverless, sem `timeout` no provider). Exceções na tabela abaixo. |
 | Build | esbuild, um pacote por Lambda (`package.individually: true`) |
 | Validação | zod v4 (`zod/mini`) |
 | Package manager | `yarn` |
@@ -184,10 +184,13 @@ São 32 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um
 | Lambda | Memória | Timeout |
 |---|---|---|
 | `processMeal` | 1024 MB | 120 s |
+| `me`, `createMeal`, `getMealById`, `listMeal`, `signIn`, `refreshToken` | 512 MB | 6 s |
 | `createTextMeal`, `addMealItems` | 256 MB | 29 s |
-| `reconcilePayments` | 128 MB | 60 s, sem retry automático (`maximumRetryAttempts: 0`) |
-| `checkout` | 128 MB | 29 s |
-| `cancel`, `webhookAsaas`, `oauthCallback`, `checkMealUpload` | 128 MB | 15 s |
-| Todas as outras | 128 MB | 6 s |
+| `reconcilePayments` | 256 MB | 60 s, sem retry automático (`maximumRetryAttempts: 0`) |
+| `checkout` | 256 MB | 29 s |
+| `cancel`, `webhookAsaas`, `oauthCallback`, `checkMealUpload` | 256 MB | 15 s |
+| Todas as outras | 256 MB | 6 s |
+
+Até 2026-11-17 o padrão era 128 MB. As funções HTTP usavam de 97 a 121 MB (`checkout`, `oauthCallback` e `reconcilePayments` chegavam a 121 MB), perto de estourar a memória, e com 128 MB a Lambda recebe pouca CPU: Init Duration p50 de 258 a 313 ms e p90 da duração acima de 1,2 s nas 6 rotas mais usadas. Por isso o padrão subiu para 256 MB e as 6 rotas mais chamadas pelo app foram para 512 MB. Medido em dev depois da mudança: o Init Duration não muda (255–325 ms, porque a fase de init recebe CPU independente da memória), mas a duração da primeira request depois do cold start caiu de 1,0–2,1 s para 0,3–0,7 s (p50: `createMeal` 2,1 → 0,55 s, `signIn` 2,0 → 0,7 s, `refreshToken` 1,7 → 0,6 s, `me` 1,4 → 0,46 s, `getMealById` 1,25 → 0,32 s, `listMeal` 1,0 → 0,34 s). O custo fica abaixo de US$ 0,01 por mês no volume atual de prod. Para conferir, use a consulta de `REPORT` em [06-operacao.md](06-operacao.md).
 
 Os timeouts de `checkout` e `cancel` ficam acima do abort de 10 s de cada chamada ao Asaas: o `checkout` pode fazer duas chamadas seguidas (cancelar a assinatura antiga e criar o checkout) e fica logo abaixo do corte de 30 s do HTTP API. O `oauthCallback` cobre o abort de 5 s da troca do `code` mais o `GetUser` e a conta no DynamoDB (ver [billing](fluxos/billing.md#erros) e [login com Google](fluxos/auth-google-oauth.md#erros)).

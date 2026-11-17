@@ -46,7 +46,7 @@ sequenceDiagram
         L->>Q: estorna a cota
         L-->>U: 500
     end
-    L-->>U: 201 com meal e unidentifiedFoodsCount
+    L-->>U: 201 com meal, unidentifiedFoodsCount e a cota atualizada
 ```
 
 ## Passo a passo
@@ -57,13 +57,14 @@ sequenceDiagram
 4. **Nenhum alimento** gera `422 NO_FOOD_IDENTIFIED`, e o usuário **não perde cota**.
 5. **Consumo da cota.** Só agora o contador é incrementado, com a mesma lógica da foto (ver [cotas](../05-erros-cotas-rate-limit.md#cotas-de-refeição)). Como a checagem e o consumo são separados, duas requests simultâneas podem passar pela checagem. O incremento condicional garante que só uma consome a última vaga, e a outra recebe 403 ou 429.
 6. **Gravação.** A refeição nasce em `SUCCESS`, com `inputType: TEXT`, `inputFileKey: null` e o texto em `description`. Se o `PutItem` falhar, a cota é estornada antes de devolver o erro.
+7. **Resposta.** O `201` traz `mealQuota` e `dailyMealQuota` no mesmo formato do `GET /me`, tirados do próprio incremento do passo 5. O app grava a refeição em `['meal', id]`, insere na lista do dia em cache e atualiza a cota em `['accounts']`, sem refazer o `GET /me` nem o `GET /meals`.
 
 ## Comparação com foto e áudio
 
 | | Foto / áudio | Texto |
 |---|---|---|
 | Execução | Assíncrona (S3 → SQS → Lambda) | Síncrona, na request |
-| Resposta | `201 { mealId, uploadSignature }` | `201 { meal, unidentifiedFoodsCount }` |
+| Resposta | `201 { mealId, uploadSignature, mealQuota, dailyMealQuota }` | `201 { meal, unidentifiedFoodsCount, mealQuota, dailyMealQuota }` |
 | Quando consome a cota | Antes do upload | Depois da IA, só se houver alimento |
 | Sem alimento | `REJECTED` + estorno | `422`, sem consumir |
 | Retry | 2 tentativas pela fila | 1 retry do SDK da OpenAI |

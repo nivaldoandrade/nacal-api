@@ -1,6 +1,7 @@
 import { Controller } from '@application/contracts/Controller';
 import { GetMealByIdController } from '@application/controllers/meal/GetMealByIdController';
 import { CreateTextMealBody, createTextMealSchema } from '@application/controllers/meal/schemas/createTextMealSchema';
+import { MealQuotaService } from '@application/services/MealQuotaService';
 import { CreateTextMealUseCase } from '@application/useCases/meal/CreateTextMealUseCase';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { RateLimit } from '@kernel/decorators/RateLimit';
@@ -18,7 +19,7 @@ export class CreateTextMealController extends Controller<'private'> {
   protected async handler(
     request: Controller.RequestPrivate<CreateTextMealBody>,
   ): Promise<Controller.Response<CreateTextMealController.Response>> {
-    const { meal, unidentifiedFoodsCount } = await this.createTextMealUseCase.execute({
+    const { meal, unidentifiedFoodsCount, mealQuota, dailyMealQuota } = await this.createTextMealUseCase.execute({
       accountId: request.accountId,
       timeZone: request.body.timeZone,
       text: request.body.text,
@@ -29,13 +30,15 @@ export class CreateTextMealController extends Controller<'private'> {
       body: {
         meal,
         unidentifiedFoodsCount,
+        mealQuota,
+        dailyMealQuota,
       },
     };
   }
 }
 
 export namespace CreateTextMealController {
-  export type Response = {
+  export type Response = MealQuotaService.Usage & {
     meal: GetMealByIdController.Response;
     unidentifiedFoodsCount: number;
   }

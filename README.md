@@ -36,7 +36,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 
 ## Arquitetura
 
-Backend **serverless e orientado a eventos** na AWS (`sa-east-1`): API Gateway HTTP API com authorizer JWT do Cognito, Lambdas em Node.js 24 (arm64), DynamoDB single-table, S3 + CloudFront para os arquivos das refeições, SQS para o processamento assíncrono com IA (OpenAI, com gate de foto no Cloudflare Workers AI) e Asaas para os pagamentos.
+Backend **serverless e orientado a eventos** na AWS (`sa-east-1`): API Gateway HTTP API com authorizer JWT do Cognito, Lambdas em Node.js 24 (arm64; 256 MB por padrão e 512 MB nas 6 rotas mais chamadas pelo app), DynamoDB single-table, S3 + CloudFront para os arquivos das refeições, SQS para o processamento assíncrono com IA (OpenAI, com gate de foto no Cloudflare Workers AI) e Asaas para os pagamentos.
 
 ```mermaid
 flowchart LR
@@ -534,13 +534,18 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 - `contentType` aceito: `image/jpeg` (até 2 MB, maior lado até 4096 px e até 16 MP), `audio/m4a` ou `audio/webm` (até 2 MB e 1–32s); `fileSize` é em bytes. A validação real do conteúdo acontece no processamento e um arquivo inválido vira `REJECTED`.
 - **Cota**: consome 1 refeição na criação (Free sem cota no mês: `403 FREE_QUOTA_EXCEEDED`; Pro com 20 refeições no dia: `429 DAILY_MEAL_LIMIT_REACHED`). A cota volta se a refeição terminar em `REJECTED` ou `FAILED`.
 
-- Resposta esperada:
+- Resposta esperada (`201`):
   ```json
   {
     "mealId": "2CkS0wZr5cY3xK1mN7jQ9bT2vL",
-    "uploadSignature": "eyJ1cmwiOiJodHRwczovL2FwaS1k..."
+    "uploadSignature": "eyJ1cmwiOiJodHRwczovL2FwaS1k...",
+    "mealQuota": { "used": 4, "limit": 20, "remaining": 16 },
+    "dailyMealQuota": null
   }
   ```
+
+- `mealQuota` e `dailyMealQuota` são a cota **depois** desta refeição, no mesmo formato do `GET /me` (no Pro, `mealQuota` tem `limit`/`remaining` `null` e `dailyMealQuota` traz a cota do dia). Saem dos próprios incrementos do contador, sem leitura a mais, para o app atualizar a cota sem refazer o `GET /me`.
+- Acompanhamento: o app consulta `GET /meals/{id}` a cada 2 s nos primeiros 20 s, depois com intervalo crescente até 10 s, e para em 3 min (ver `docs/guide/fluxos/refeicao-foto-audio.md`).
 
 - Upload no frontend (JavaScript):
 
@@ -688,11 +693,14 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
       "unidentified": null,
       "createdAt": "2026-11-07T15:00:00.000Z"
     },
-    "unidentifiedFoodsCount": 0
+    "unidentifiedFoodsCount": 0,
+    "mealQuota": { "used": 12, "limit": null, "remaining": null },
+    "dailyMealQuota": { "used": 2, "limit": 20, "remaining": 18 }
   }
   ```
 
 - `unidentifiedFoodsCount`: menções que não dizem qual alimento era ("alguma coisa no pote", "um pacotinho") e foram descartadas; o app sugere completar pelo "Adicionar item".
+- `mealQuota` e `dailyMealQuota`: a cota depois desta refeição, no mesmo formato do `GET /me` e do `201` do `create-meal`.
 
 - Erros:
 
