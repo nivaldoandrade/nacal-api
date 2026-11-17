@@ -7,7 +7,6 @@ export const envSchema = z.object({
   MAIN_TABLE_NAME: z.string().check(z.trim(), z.minLength(1)),
   RATE_LIMIT_TABLE_NAME: z.string().check(z.trim(), z.minLength(1)),
   MEALS_BUCKET_NAME: z.string().check(z.trim(), z.minLength(1)),
-  MEALS_CDN_DOMAIN_NAME: z.string().check(z.trim(), z.minLength(1)),
   MEALS_QUEUE_URL: z.string().check(z.trim(), z.minLength(1)),
   MEAL_UPLOAD_CHECK_QUEUE_URL: z.string().check(z.trim(), z.minLength(1)),
   COGNITO_POOL_DOMAIN: z.string().check(z.trim(), z.minLength(1)),

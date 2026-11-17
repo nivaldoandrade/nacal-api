@@ -141,21 +141,6 @@ if (value('CORS_ALLOWED_ORIGINS')) {
   }
 }
 
-const cdnDomain = value('MEALS_CDN_DOMAIN_NAME');
-const cdnCertificate = value('MEALS_CDN_CERTIFICATE_ARN');
-if (Boolean(cdnDomain) !== Boolean(cdnCertificate)) {
-  errors.push('MEALS_CDN_DOMAIN_NAME e MEALS_CDN_CERTIFICATE_ARN devem ser preenchidos juntos');
-}
-if (cdnDomain) {
-  if (cdnDomain !== 'cdn.nacal.app') {
-    errors.push('MEALS_CDN_DOMAIN_NAME deve ser cdn.nacal.app');
-  }
-  requireArn('MEALS_CDN_CERTIFICATE_ARN', 'acm', 'us-east-1');
-  rejectPlaceholder('MEALS_CDN_CERTIFICATE_ARN');
-} else {
-  warnings.push('MEALS_CDN_DOMAIN_NAME vazio; o CDN usará o domínio padrão *.cloudfront.net');
-}
-
 requireEmail('DLQ_ALARM_EMAIL');
 requireValue('OPENAI_API_KEY');
 rejectPlaceholder('OPENAI_API_KEY');

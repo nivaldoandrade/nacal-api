@@ -53,7 +53,6 @@ resources:
   - ${file(./sls/resources/userPool.yaml)}
   - ${file(./sls/resources/mainTable.yml)}
   - ${file(./sls/resources/mealsBucket.yml)}
-  - ${file(./sls/resources/mealsBucketCDN.yml)}
   - ${file(./sls/resources/mealsQueue.yml)}
   - ${file(./sls/resources/mealUploadCheckQueue.yml)}
   - ${file(./sls/resources/DLQAlarmTopic.yml)}

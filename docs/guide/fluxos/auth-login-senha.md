@@ -16,8 +16,11 @@ Login com e-mail e senha, renovação do token e recuperação de senha. A API �
 
 | Token | Validade | Uso |
 |---|---|---|
-| Access token | 1 dia | `Authorization: Bearer ...` em toda rota 🔒. Traz o claim `internalId`. |
+| Access token | 1 hora (desde 2026-11-17; antes 1 dia) | `Authorization: Bearer ...` em toda rota 🔒. Traz o claim `internalId` e **não** traz o escopo `aws.cognito.signin.user.admin` (suprimido pelo `preTokenGenerationTrigger`). |
 | Refresh token | 7 dias, com **rotação** | Gera um novo par. O refresh token antigo continua valendo por **60 s** (`RetryGracePeriodSeconds`) e depois deixa de valer. |
+
+- **Por que 1 hora.** O authorizer JWT do HTTP API só confere assinatura, emissor, client e validade: não sabe de revogação. Um access token vazado, ou o de quem saiu da conta, vale até o `exp`. Com 1 hora essa janela é curta. O custo é um refresh a mais por abertura do app depois de mais de 1 hora parado (o app com o token vencido toma `401`, renova uma vez e repete a requisição); o Cognito cobra por usuário ativo no mês, não por refresh, e o refresh cabe com folga no rate limit de 10 por token a cada 15 min.
+- **Sem o escopo admin.** O `InitiateAuth` sempre emite o escopo `aws.cognito.signin.user.admin`, que deixaria o próprio usuário chamar a API do Cognito com o token (por exemplo `DeleteUser`, que apagaria o usuário e deixaria a `Account` órfã). O `preTokenGenerationTrigger` o suprime em todo token, inclusive no refresh. A API não depende dele: onde precisa dos atributos do usuário, valida o JWT e usa `AdminGetUser` (ver [login com Google](auth-google-oauth.md#o-usuário-shadow-nativo)). Tokens emitidos antes da mudança continuam com o escopo até vencer.
 
 ## Login e primeiro `GET /me`
 
@@ -45,7 +48,7 @@ sequenceDiagram
     U->>Me: GET /me com Bearer
     Me->>DB: Account + Profile + Goal + Subscription
     alt Account não existe
-        Me->>Cog: GetUser com o token
+        Me->>Cog: AdminGetUser pelo username do token (JWT validado)
         Me->>DB: AccountProvisioningService.ensureAccount
         Me->>DB: lê de novo
     end
@@ -129,7 +132,7 @@ Esse também é o caminho de recuperação de quem confirmou o cadastro com uma 
 | Qualquer erro em `confirmation-forgot-password` | `400 BAD_REQUEST` |
 | `GET /me` sem `Account`, com token sem `email_verified` ou `internalId` diferente | `404 RESOURCE_NOT_FOUND` |
 | `GET /me` sem `Account` e o e-mail já é de outra conta | `409 EMAIL_ALREADY_IN_USE` |
-| `GET /me` sem `Account` com o access token de um usuário apagado do Cognito | `401 UNAUTHORIZED` (o app tenta o refresh, recebe `401 INVALID_REFRESH_TOKEN` e desloga) |
+| `GET /me` sem `Account` com o access token de um usuário apagado ou desabilitado no Cognito | `401 UNAUTHORIZED` (o app tenta o refresh, recebe `401 INVALID_REFRESH_TOKEN` e desloga) |
 | Corpo fora do schema | `400 VALIDATION` |
 | Rate limit da API | `429 RATE_LIMIT_EXCEEDED` |
 
@@ -141,5 +144,6 @@ Esse também é o caminho de recuperação de quem confirmou o cadastro com uma 
 | Refresh | [`RefreshTokenUseCase.ts`](../../../src/application/useCases/auth/RefreshTokenUseCase.ts) |
 | Esqueci a senha | [`ForgotPasswordUseCase.ts`](../../../src/application/useCases/auth/ForgotPasswordUseCase.ts), [`ConfirmForgotPasswordUseCase.ts`](../../../src/application/useCases/auth/ConfirmForgotPasswordUseCase.ts) |
 | `GET /me` | [`GetMeController.ts`](../../../src/application/controllers/accounts/GetMeController.ts), [`GetProfileAndGoalByAccountId.ts`](../../../src/application/query/GetProfileAndGoalByAccountId.ts) |
-| Cognito, `SECRET_HASH` e mapeamento de throttling | [`AuthGateway.ts`](../../../src/infra/gateways/AuthGateway.ts) |
+| Cognito, `SECRET_HASH`, validação do JWT e mapeamento de throttling | [`AuthGateway.ts`](../../../src/infra/gateways/AuthGateway.ts) |
+| Claim `internalId` e escopo suprimido | [`preTokenGenerationTrigger.ts`](../../../src/main/functions/auth/preTokenGenerationTrigger.ts) |
 | Validade e rotação dos tokens | [`userPool.yaml`](../../../sls/resources/userPool.yaml) |

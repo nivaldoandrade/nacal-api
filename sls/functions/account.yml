@@ -7,6 +7,7 @@ me:
         - ${self:custom.iam.mainTableRead}
         - ${self:custom.iam.mainTableWrite}
         - ${self:custom.iam.rateLimitTable}
+        - ${self:custom.iam.cognitoAdminGetUser}
   events:
     - httpApi:
         path: /me

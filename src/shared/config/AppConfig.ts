@@ -17,8 +17,6 @@ export class AppConfig {
 
   readonly storage: AppConfig.Storage;
 
-  readonly cdn: AppConfig.CDN;
-
   readonly queue: AppConfig.Queue;
 
   readonly billing: AppConfig.Billing;
@@ -48,10 +46,6 @@ export class AppConfig {
 
     this.storage = {
       mealsBucketName: env.MEALS_BUCKET_NAME,
-    };
-
-    this.cdn = {
-      mealsCDN: env.MEALS_CDN_DOMAIN_NAME,
     };
 
     this.queue = {
@@ -166,10 +160,6 @@ namespace AppConfig {
 
   export type Storage = {
     mealsBucketName: string;
-  }
-
-  export type CDN = {
-    mealsCDN: string;
   }
 
   export type Queue = {

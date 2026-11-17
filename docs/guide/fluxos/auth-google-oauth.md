@@ -35,19 +35,21 @@ sequenceDiagram
         Pre-->>Cog: autoConfirm e autoVerifyEmail
     end
     Cog->>Tok: gerar tokens
-    Tok-->>Cog: claim internalId no access token
+    Tok-->>Cog: claim internalId e sem o escopo aws.cognito.signin.user.admin
     Cog-->>U: redirect com code
 
     U->>API: POST /auth/oauth/callback com code, redirect_uri e code_verifier
     API->>Cog: troca o code pelos tokens, timeout 5 s
-    API->>Cog: GetUser com o access token
+    API->>API: valida o JWT do access token (aws-jwt-verify)
+    API->>Cog: AdminGetUser pelo claim username
     API->>API: exige email, externalId, internalId e email_verified
     API->>DB: AccountProvisioningService.ensureAccount
     API-->>U: 200 com accessToken, refreshToken e isOnboarded
 
     opt isOnboarded false
         U->>API: POST /auth/complete-onboarding com accessToken + perfil
-        API->>Cog: GetUser
+        API->>API: valida o JWT do accessToken
+        API->>Cog: AdminGetUser pelo claim username
         API->>DB: busca a Account pelo e-mail
         alt já onboarded
             API-->>U: 204 sem gravar
@@ -84,19 +86,21 @@ flowchart TD
   - Se o dono estava no onboarding e terminou com o Google, o app recebe `isOnboarded: false` e manda o que ele preencheu no `complete-onboarding`.
   - Custo aceito: quem fez o cadastro por e-mail de verdade, não confirmou o código e depois entrou com o Google refaz o onboarding. É a mesma regra do `confirm-sign-up`, que só aplica o `PendingSignUp` quando quem confirma sabe a senha.
 - O `preTokenGenerationTrigger` (V2) copia `custom:internalId` para o claim `internalId` do access token. É esse claim que o `lambdaHttpAdapter` lê como `accountId` em toda rota privada.
+- O mesmo trigger **suprime o escopo `aws.cognito.signin.user.admin`** (`scopesToSuppress`) em todo access token: login com Google, login por senha e refresh. Com esse escopo, o próprio usuário podia chamar a API do Cognito com o token dele (`DeleteUser`, `UpdateUserAttributes`, `GetUser`) e, por exemplo, apagar o usuário e deixar a `Account` órfã no DynamoDB. Só tirar o escopo do `AllowedOAuthScopes` do client não bastava: o `InitiateAuth` do login por senha sempre emite esse escopo. Ele também saiu do `AllowedOAuthScopes` (o app não pede `scope` no `/oauth2/authorize`, então recebe `email`, `profile` e `openid`).
+- Por isso a API não usa mais o `GetUser` com o token do usuário. O `AuthGateway.getUser` valida o access token com o `aws-jwt-verify` (assinatura pelas chaves públicas do pool, emissor, `token_use: access`, `client_id` e validade) e lê o usuário com `AdminGetUser` pelo claim `username`. Usam esse caminho o `oauth/callback`, o `complete-onboarding` e o `GET /me` de conta faltando, e essas três funções têm o trecho `cognitoAdminGetUser` no papel IAM. Usuário desabilitado no Cognito (`Enabled: false`) recebe `401 UNAUTHORIZED`, como o usuário apagado. Diferença para o `GetUser`: um token revogado (`RevokeToken` ou `GlobalSignOut`, que o app não usa hoje: sair da conta só apaga os tokens no aparelho) continua aceito até vencer, como já acontece no authorizer do HTTP API. Falha ao buscar ou ler as chaves públicas do pool (JWKS) sai como `500`, não como `INVALID_GRANT`.
 
 ## Passo a passo
 
 ### Callback (`POST /auth/oauth/callback`)
 
 1. Troca `code` + `code_verifier` pelos tokens no endpoint `/oauth2/token` do domínio do Cognito, com timeout de 5 s. Resposta de erro do Cognito, resposta sem tokens, timeout ou falha de rede viram `400 INVALID_GRANT` (o `code` é de uso único, então tentar de novo exige repetir o login com o Google, que é o que o app pede). A Lambda tem timeout de 15 s.
-2. Lê o usuário com `GetUser` e exige `email`, `externalId`, `internalId` e `email_verified`. Faltou algo: `400 INVALID_GRANT`.
+2. Lê o usuário (`AuthGateway.getUser`: valida o JWT e chama `AdminGetUser` pelo `username`) e exige `email`, `externalId`, `internalId` e `email_verified`. Faltou algo: `400 INVALID_GRANT`.
 3. Chama o [`AccountProvisioningService`](auth-cadastro-email.md#accountprovisioningservice-o-ponto-único-de-criação-de-conta): com `skipPendingSignUp: true`. Devolve a `Account` existente ou cria uma com `isOnboarded: false`. Um `PendingSignUp` do mesmo usuário é apagado sem ser aplicado (ver acima).
 4. Responde `200` com `{ accessToken, refreshToken, isOnboarded }`.
 
 ### Onboarding (`POST /auth/complete-onboarding`)
 
-Rota **pública** no API Gateway: o `accessToken` vai no corpo e a API valida chamando `GetUser` no Cognito.
+Rota **pública** no API Gateway: o `accessToken` vai no corpo e a API valida o JWT (`aws-jwt-verify`) e lê o usuário com `AdminGetUser` pelo claim `username`.
 
 1. Lê `name`, `email` e `externalId` do usuário.
 2. Busca a `Account` pelo e-mail. Não existe: `404 RESOURCE_NOT_FOUND`. Existe com outro `externalId`: `409 EMAIL_ALREADY_IN_USE`. É a exceção à regra de buscar a conta pelo `internalId` (ver [cadastro por e-mail](auth-cadastro-email.md#accountprovisioningservice-o-ponto-único-de-criação-de-conta)). A checagem do `externalId` é o que impede usar a conta de outra pessoa.
@@ -120,6 +124,8 @@ Como o claim `internalId` já vem no primeiro token, o app não precisa renovar 
 | E-mail já usado por outro `internalId` | `409 EMAIL_ALREADY_IN_USE` |
 | Timeout ou falha de rede na troca do `code` | `400 INVALID_GRANT` |
 | Onboarding com `accessToken` inválido, expirado ou usuário sem `name` | `400 INVALID_GRANT` |
+| `accessToken` válido de usuário apagado ou desabilitado no Cognito (callback e onboarding) | `401 UNAUTHORIZED` |
+| Falha ao buscar ou ler as chaves públicas do pool (JWKS) | `500` |
 | Onboarding sem `Account` | `404 RESOURCE_NOT_FOUND` |
 | Onboarding com `Account` de outro `externalId` | `409 EMAIL_ALREADY_IN_USE` |
 | Corpo fora do schema | `400 VALIDATION` |
@@ -131,8 +137,8 @@ Como o claim `internalId` já vem no primeiro token, o app não precisa renovar 
 |---|---|
 | Callback | [`OAuthCallbackUseCase.ts`](../../../src/application/useCases/auth/OAuthCallbackUseCase.ts) |
 | Onboarding | [`CompleteOnboardingUseCase.ts`](../../../src/application/useCases/auth/CompleteOnboardingUseCase.ts) |
-| Troca de code e `GetUser` | [`AuthGateway.ts`](../../../src/infra/gateways/AuthGateway.ts) |
+| Troca de code, validação do JWT e `AdminGetUser` | [`AuthGateway.ts`](../../../src/infra/gateways/AuthGateway.ts) |
+| Claim `internalId` e escopo suprimido | [`preTokenGenerationTrigger.ts`](../../../src/main/functions/auth/preTokenGenerationTrigger.ts) |
 | Usuário shadow | [`preSignUpTrigger.ts`](../../../src/main/functions/auth/preSignUpTrigger.ts) |
-| Claim `internalId` | [`preTokenGenerationTrigger.ts`](../../../src/main/functions/auth/preTokenGenerationTrigger.ts) |
 | User pool, client e domínio | [`userPool.yaml`](../../../sls/resources/userPool.yaml) |
 | Lado do app | `app/src/app/hooks/useSocialAuth.ts` (repo do app) |

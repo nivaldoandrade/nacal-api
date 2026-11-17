@@ -10,6 +10,7 @@ export async function handler(event: PreTokenGenerationV3TriggerEvent) {
         claimsToAddOrOverride: {
           internalId,
         },
+        scopesToSuppress: ['aws.cognito.signin.user.admin'],
       },
     },
   };

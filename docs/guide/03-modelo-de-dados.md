@@ -302,14 +302,14 @@ Itens só com `count` e `expiresAt`, sem `type`.
 | Rejeições estornadas no dia (Free e Pro) | `RL#account-rejections#<accountId>` | `AAAA-MM-DD` no fuso de São Paulo | `count`, `expiresAt` | 15 dias |
 | Evento de webhook processado | `RL#webhook-event#<eventId>` | `EVENT` | `expiresAt` | 14 dias. Na reconciliação, a janela + 10 dias (45 no padrão de 35) |
 
-## S3 e CDN
+## S3
 
 | Item | Valor |
 |---|---|
 | Bucket | `nacal-api-<stage>-meals-bucket` (`DeletionPolicy: Retain`, sobrevive a um `sls remove`) |
 | Chave | `<accountId>/<uuid>.<jpeg, m4a ou webm>` |
 | Metadados | `x-amz-meta-mealid` e `x-amz-meta-accountid`, com valor fixo no Presigned POST |
-| Leitura | Só pela CloudFront, com Origin Access Control |
+| Leitura | Só pelas Lambdas (`GetObject`). O bucket não é público e não há CDN: a API não devolve URL do arquivo |
 | Remoção | Quando a refeição é rejeitada, falha ou é excluída |
 
 ## Arquivos envolvidos
@@ -321,4 +321,4 @@ Itens só com `count` e `expiresAt`, sem `type`.
 | Repositórios | [`databases/dynamodb/`](../../src/infra/databases/dynamodb/) |
 | Consultas diretas | [`query/`](../../src/application/query/) |
 | Transações | [`UnitOfWork.ts`](../../src/infra/databases/dynamodb/uow/UnitOfWork.ts), [`SignUpUOW.ts`](../../src/infra/databases/dynamodb/uow/SignUpUOW.ts) |
-| Bucket e CDN | [`mealsBucket.yml`](../../sls/resources/mealsBucket.yml), [`mealsBucketCDN.yml`](../../sls/resources/mealsBucketCDN.yml) |
+| Bucket | [`mealsBucket.yml`](../../sls/resources/mealsBucket.yml) |

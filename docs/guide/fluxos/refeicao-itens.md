@@ -50,7 +50,7 @@ sequenceDiagram
 
 - **O "dia" é o dia local do usuário.** O `GSI1PK` usa a data da criação no `timeZone` enviado na criação da refeição. Uma refeição feita às 23h em São Paulo cai no dia certo, mesmo já sendo o dia seguinte em UTC.
 - A listagem só traz `SUCCESS`. Refeições em processamento, rejeitadas ou com falha aparecem só pelo `GET /meals/{id}`.
-- O `MealPresenter` monta a URL do arquivo pela CDN (`inputFileUrl`), exceto em `REJECTED` e `FAILED`, cujo arquivo já foi apagado.
+- A resposta não traz URL do arquivo: o `inputFileUrl` e a CDN saíram em 2026-11-17 (o app nunca mostrou a foto). Se a foto voltar a aparecer no app, a ideia é uma URL pré-assinada de `GetObject` com validade curta, gerada pelo `MealPresenter`.
 
 ## Adicionar itens por texto
 

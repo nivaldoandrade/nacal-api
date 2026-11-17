@@ -65,7 +65,7 @@ Resources:
         AccessTokenValidity: 1
         RefreshTokenValidity: 7
         TokenValidityUnits:
-          AccessToken: days
+          AccessToken: hours
           RefreshToken: days
         RefreshTokenRotation:
           Feature: ENABLED
@@ -75,7 +75,6 @@ Resources:
           - email
           - profile
           - openid
-          - aws.cognito.signin.user.admin
         AllowedOAuthFlows:
           - code
         CallbackURLs: !If

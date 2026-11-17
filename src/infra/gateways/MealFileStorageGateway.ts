@@ -1,5 +1,3 @@
-import { URL } from 'node:url';
-
 import { Meal } from '@application/entities/Meal';
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
@@ -24,15 +22,6 @@ export class MealFileStorageGateway {
     const filename = randomUUID();
 
     return `${accountId}/${filename}.${extension}`;
-  }
-
-  getFileURL(fileKey: string): string {
-    const url = new URL(
-      fileKey,
-      `https://${this.config.cdn.mealsCDN}`,
-    );
-
-    return url.toString();
   }
 
   async getObjectBytes(fileKey: string): Promise<Buffer> {

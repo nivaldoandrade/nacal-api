@@ -21,7 +21,7 @@ Escopo: exclusão manual de uma conta no stage `prod` durante o beta. O app aind
   > Equipe NaCal
 
   Quando o remetente for outro e-mail, só execute depois que o titular confirmar respondendo a esta mensagem. Depois de executar, envie uma confirmação curta de que a exclusão foi concluída.
-- Tenha acesso ao AWS CLI com permissão em Cognito, DynamoDB, S3 e CloudFront, e ao painel do Asaas. Em prod, rode com `export AWS_PROFILE=nacal-prod`.
+- Tenha acesso ao AWS CLI com permissão em Cognito, DynamoDB e S3, e ao painel do Asaas. Em prod, rode com `export AWS_PROFILE=nacal-prod`.
 - Nunca execute `sls remove` para atender uma exclusão: isso remove o ambiente inteiro.
 - Se a conta tiver assinatura ativa, cancele a assinatura antes de apagar os dados. Se o cancelamento falhar, pare e escale.
 
@@ -72,20 +72,7 @@ aws dynamodb get-item \
 aws s3 rm "s3://${MEALS_BUCKET}/${ACCOUNT_ID}/" --recursive
 ```
 
-Invalide o cache do CloudFront para o prefixo da conta:
-
-```bash
-DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources \
-  --region "$AWS_REGION" \
-  --stack-name "nacal-api-${STAGE}" \
-  --logical-resource-id MealBucketCDN \
-  --query 'StackResources[0].PhysicalResourceId' \
-  --output text)
-
-aws cloudfront create-invalidation \
-  --distribution-id "$DISTRIBUTION_ID" \
-  --paths "/${ACCOUNT_ID}/*"
-```
+Não há CDN na frente do bucket (removida em 2026-11-17), então não há cache a invalidar: depois do `s3 rm` os arquivos não podem mais ser lidos.
 
 ## 4. Listar e apagar os itens da `MainTable`
 
@@ -237,7 +224,7 @@ Esperado: as duas contagens `0`, listagem do S3 vazia e `UserNotFoundException` 
 ## Retenção e limpeza
 
 - DynamoDB tem point-in-time recovery de 35 dias; itens excluídos podem permanecer nos backups até expirarem. Não restaure a conta para “completar” a exclusão.
-- O bucket de refeições não tem versionamento; após o `s3 rm` e a invalidação do CloudFront, os objetos saem da entrega pública.
+- O bucket de refeições não tem versionamento nem CDN; após o `s3 rm` os objetos deixam de existir.
 - Logs operacionais podem conter e-mail ou `accountId`; aplique a retenção mínima e restrinja o acesso.
 - O Asaas pode reter dados financeiros por obrigação legal/fiscal. Cancele a assinatura, mas não prometa ao titular a eliminação desses registros sem validação jurídica.
 - Apague `/tmp/nacal-delete-main.json` e `/tmp/nacal-delete-rl.json` ao terminar.

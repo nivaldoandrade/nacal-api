@@ -5,8 +5,10 @@ import { InvalidOAuthGrant } from '@application/errors/application/InvalidOAuthG
 import { InvalidRefreshToken } from '@application/errors/application/InvalidRefreshToken';
 import { TooManyAttempts } from '@application/errors/application/TooManyAttempts';
 import { Unauthorized } from '@application/errors/http/Unauthorized';
-import { AdminDeleteUserCommand, AdminSetUserPasswordCommand, AdminGetUserCommand, CodeDeliveryFailureException, ConfirmForgotPasswordCommand, ConfirmSignUpCommand, ForgotPasswordCommand, GetTokensFromRefreshTokenCommand, GetUserCommand, InitiateAuthCommand, LimitExceededException, NotAuthorizedException, RefreshTokenReuseException, ResendConfirmationCodeCommand, SignUpCommand, TooManyFailedAttemptsException, TooManyRequestsException, UserNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
+import { AdminDeleteUserCommand, AdminSetUserPasswordCommand, AdminGetUserCommand, CodeDeliveryFailureException, ConfirmForgotPasswordCommand, ConfirmSignUpCommand, ForgotPasswordCommand, GetTokensFromRefreshTokenCommand, InitiateAuthCommand, LimitExceededException, NotAuthorizedException, RefreshTokenReuseException, ResendConfirmationCodeCommand, SignUpCommand, TooManyFailedAttemptsException, TooManyRequestsException, UserNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { cognitoClient } from '@infra/clients/cognitoClient';
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import { FetchError, JwkValidationError, JwksValidationError, JwtBaseError, WaitPeriodNotYetEndedJwkError } from 'aws-jwt-verify/error';
 import { Injectable } from '@kernel/decorators/Injectable';
 import { AppConfig } from '@shared/config/AppConfig';
 import { logger } from '@shared/logger/logger';
@@ -16,9 +18,17 @@ import { normalizeEmail } from '@shared/utils/normalizeEmail';
 @Injectable()
 export class AuthGateway {
 
+  private readonly accessTokenVerifier;
+
   constructor(
     private readonly config: AppConfig,
-  ) { }
+  ) {
+    this.accessTokenVerifier = CognitoJwtVerifier.create({
+      userPoolId: config.envAuth.cognito.userPoolId,
+      tokenUse: 'access',
+      clientId: config.envAuth.cognito.clientId,
+    });
+  }
 
   async exchangeCodeForTokens({
     code,
@@ -63,20 +73,23 @@ export class AuthGateway {
   }
 
   async getUser(accessToken: string) {
-    const command = new GetUserCommand({
-      AccessToken: accessToken,
+    const username = await this.verifyAccessToken(accessToken);
+
+    const command = new AdminGetUserCommand({
+      UserPoolId: this.config.envAuth.cognito.userPoolId,
+      Username: username,
     });
 
     let userAttributes: AuthGateway.UserAttributes;
 
     try {
-      const { UserAttributes } = await cognitoClient.send(command);
+      const { UserAttributes, Enabled } = await cognitoClient.send(command);
       userAttributes = UserAttributes;
-    } catch (error) {
-      if (error instanceof NotAuthorizedException) {
-        throw new InvalidOAuthGrant('Invalid or expired access token.');
-      }
 
+      if (Enabled === false) {
+        throw new Unauthorized('User is disabled.');
+      }
+    } catch (error) {
       if (error instanceof UserNotFoundException) {
         throw new Unauthorized('User not found.');
       }
@@ -95,6 +108,28 @@ export class AuthGateway {
       internalId: attrs['custom:internalId'] ?? null,
       emailVerified: attrs['email_verified'] === 'true',
     };
+  }
+
+  private async verifyAccessToken(accessToken: string): Promise<string> {
+    try {
+      const { username } = await this.accessTokenVerifier.verify(accessToken);
+      return username;
+    } catch (error) {
+      if (
+        error instanceof FetchError
+        || error instanceof JwksValidationError
+        || error instanceof JwkValidationError
+        || error instanceof WaitPeriodNotYetEndedJwkError
+      ) {
+        throw error;
+      }
+
+      if (error instanceof JwtBaseError) {
+        throw new InvalidOAuthGrant('Invalid or expired access token.');
+      }
+
+      throw error;
+    }
   }
 
   async signIn({ email, password }: AuthGateway.SignIn['params']): Promise<AuthGateway.SignIn['result']> {

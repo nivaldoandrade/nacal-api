@@ -24,8 +24,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 - **Nome e ícone da refeição**: Derivados pela API a partir do horário no **fuso do usuário** (`timeZone` IANA enviado no `create-meal`), com `mealType` declarado no áudio, no texto ou na descrição da foto sobrepondo o horário;
 - **Dia da refeição no fuso do usuário**: A refeição é agrupada no dia local de quando foi registrada (mesmo `timeZone`), então um jantar às 23h fica no mesmo dia do café da manhã, e não no dia seguinte em UTC;
 - **Transcrição de áudio**: Transcrição automática de áudio via IA antes da análise;
-- **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry) e no máximo 5 execuções ao mesmo tempo (`maximumConcurrency`); a OpenAI recebe o arquivo já validado (base64 na foto), não a URL da CDN;
-- **CDN para arquivos**: CloudFront para servir os arquivos de refeição;
+- **Processamento assíncrono**: Fila SQS para processamento de refeições com até **2 tentativas no total** (1 retry) e no máximo 5 execuções ao mesmo tempo (`maximumConcurrency`); a OpenAI recebe o arquivo já validado (base64 na foto), lido do S3;
 - **Refeição presa não fica com a cota**: 15 min depois do `create-meal`, uma mensagem atrasada no SQS confere a refeição; se o upload nunca terminou ou ela nunca saiu da fila, vira `FAILED` com estorno de cota;
 - **Alarmes**: Notificação por email (só em prod) quando falhas inesperadas esgotam as entregas das filas (Dead Letter Queues), quando a fila de processamento acumula (mensagem mais antiga com mais de 2 min), quando o HTTP API responde `5xx` (3 em 5 min), quando o webhook do Asaas responde algo diferente de 2xx, quando uma refeição vira `FAILED`, quando a `processMeal` sofre throttling e quando o trigger do S3 dá erro;
 - **Observabilidade**: logs JSON com uma linha por request (`routeKey`, `statusCode`, latência, erro), transições do processamento de refeições, `usage` de tokens de cada chamada à OpenAI, métricas EMF (`MealFailed`, `WebhookNon2xx`), access log do HTTP API, retenção de 30 dias e sourcemaps nas stacks de erro;
@@ -36,7 +35,7 @@ API serverless para um diário alimentar inteligente com inteligência artificia
 
 ## Arquitetura
 
-Backend **serverless e orientado a eventos** na AWS (`sa-east-1`): API Gateway HTTP API com authorizer JWT do Cognito, Lambdas em Node.js 24 (arm64; 256 MB por padrão e 512 MB nas 6 rotas mais chamadas pelo app), DynamoDB single-table, S3 + CloudFront para os arquivos das refeições, SQS para o processamento assíncrono com IA (OpenAI, com gate de foto no Cloudflare Workers AI) e Asaas para os pagamentos.
+Backend **serverless e orientado a eventos** na AWS (`sa-east-1`): API Gateway HTTP API com authorizer JWT do Cognito, Lambdas em Node.js 24 (arm64; 256 MB por padrão e 512 MB nas 6 rotas mais chamadas pelo app), DynamoDB single-table, S3 para os arquivos das refeições (sem CDN), SQS para o processamento assíncrono com IA (OpenAI, com gate de foto no Cloudflare Workers AI) e Asaas para os pagamentos.
 
 ```mermaid
 flowchart LR
@@ -168,9 +167,6 @@ SES_SOURCE_ARN=arn:aws:ses:sa-east-1:xxxxx:identity/seudominio
 API_DOMAIN_NAME=
 API_CERTIFICATE_ARN=
 
-MEALS_CDN_DOMAIN_NAME=
-MEALS_CDN_CERTIFICATE_ARN=
-
 DLQ_ALARM_EMAIL=seu-email@exemplo.com
 
 OPENAI_API_KEY=sk-xxxxx
@@ -266,14 +262,6 @@ A lista de espera da landing guarda só o e-mail, então o convite vai por e-mai
 
 O script lê `BETA_ALLOWED_EMAILS` e `BETA_GATE_ENABLED` do `nacal-api-<stage>-preSignUpTrigger` e não envia nada se algum destinatário ainda não estiver liberado. Cada destinatário recebe um e-mail separado.
 
-### 5. Configurar o CDN na zona de DNS (opcional)
-
-Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio customizado da distribuição CloudFront para os arquivos de refeição). O registro de DNS do domínio precisa apontar para o domain da distribuição.
-
-- **Primeiro deploy**: após o `sls deploy`, consulte o domain da distribuição criada (`sls info` ou `aws cloudfront list-distributions`) e crie na zona de DNS do domínio um registro **CNAME** de `MEALS_CDN_DOMAIN_NAME` apontando para esse domain (ex.: `dxxxxxxxxxxxx.cloudfront.net`);
-- **Recriação da stack**: antes de deployar, garanta que o CNAME **não aponte mais** para a distribuição antiga/deletada (caso contrário o CloudFront rejeita a criação do alias). Após o deploy, recrie o CNAME apontando para o domain da nova distribuição;
-- Sem `MEALS_CDN_DOMAIN_NAME`, a distribuição usa o domain padrão `*.cloudfront.net` — nenhuma ação é necessária no DNS.
-
 ## Endpoints
 
 ### Autenticação
@@ -303,7 +291,7 @@ Aplica-se quando `MEALS_CDN_DOMAIN_NAME` estiver definido no `.env` (domínio cu
 | ------ | ------------------------ | ------------------------------------------------------ | ------------ |
 | POST   | `/create-meal`           | Cria uma refeição (JPEG ≤2 MB e ≤4096 px, ou M4A/WebM ≤2 MB e 1–32s) e retorna Presigned POST | JWT          |
 | GET    | `/meals?date=YYYY-MM-DD` | Lista refeições de um dia específico                   | JWT          |
-| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, `inputFileUrl`, alimentos, `canAddItems`, `canRemoveItems` e `unidentified` | JWT          |
+| GET    | `/meals/{id}`            | Retorna uma refeição por ID com status, rejeição, alimentos, `canAddItems`, `canRemoveItems` e `unidentified` | JWT          |
 | POST   | `/meals/text`            | Cria uma refeição a partir de um texto (IA síncrona) e devolve a refeição pronta | JWT          |
 | POST   | `/meals/{id}/items`      | Adiciona itens a uma refeição `SUCCESS` a partir de texto (IA síncrona) | JWT          |
 | DELETE | `/meals/{id}`            | Exclui a refeição (soft delete + remove o arquivo do S3) | JWT          |
@@ -448,7 +436,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 
 #### Complete Onboarding -> `/auth/complete-onboarding`
 
-- Cria o perfil e as metas nutricionais de um usuário do Google (a `Account` já foi criada no `OAuth Callback`). Identidade (nome, email, `externalId`) é derivada **do access token**, não do body:
+- Cria o perfil e as metas nutricionais de um usuário do Google (a `Account` já foi criada no `OAuth Callback`). Identidade (nome, email, `externalId`) é derivada **do access token**, não do body: a API valida o JWT (`aws-jwt-verify`: assinatura, emissor, `token_use: access`, `client_id` e validade) e lê o usuário com `AdminGetUser` pelo claim `username`:
 
 ```bash
   curl -X POST https://xxx.execute-api.sa-east-1.amazonaws.com/auth/complete-onboarding \
@@ -467,7 +455,7 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
 - Resposta esperada: `204 No Content`.
 - O backend reutiliza a `Account` criada no callback, grava `Profile` e `Goal` e marca `isOnboarded: true` atomicamente (`TransactWriteCommand`).
 - **Conta já onboarded**: responde `204` sem gravar (perfil, metas e `termsAcceptedAt` não mudam, nem as edições feitas por `PUT /profiles` e `POST /goals`). O `Put` da `Account` na transação tem condição (`attribute_not_exists(PK) OR isOnboarded = false`), então duas chamadas simultâneas gravam uma vez só; a outra também recebe `204` (se o DynamoDB acusar `TransactionConflict`, a transação é tentada mais uma vez).
-- Erros: `409 EMAIL_ALREADY_IN_USE` (email já pertence a outra conta, `externalId` divergente), `400 INVALID_GRANT` (token inválido/expirado ou dados ausentes no Cognito), `401 UNAUTHORIZED` (usuário do token apagado do Cognito), `404 RESOURCE_NOT_FOUND` (token válido sem `Account` registrada) e `400 VALIDATION` (body inválido).
+- Erros: `409 EMAIL_ALREADY_IN_USE` (email já pertence a outra conta, `externalId` divergente), `400 INVALID_GRANT` (token inválido/expirado ou dados ausentes no Cognito), `401 UNAUTHORIZED` (usuário do token apagado ou desabilitado no Cognito), `500` (falha ao buscar as chaves públicas do pool), `404 RESOURCE_NOT_FOUND` (token válido sem `Account` registrada) e `400 VALIDATION` (body inválido).
 - Não é necessário trocar o token após o sucesso: o `accessToken` do callback já contém o claim `internalId`.
 
 #### Get Me -> `/me`
@@ -635,7 +623,6 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
     "status": "REJECTED",
     "rejectionReason": "NOT_A_MEAL",
     "inputFileType": "PICTURE",
-    "inputFileUrl": null,
     "name": "",
     "icon": "",
     "foods": [],
@@ -646,8 +633,9 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
   }
   ```
 
-- Refeições por texto vêm com `inputFileType: "TEXT"` e `inputFileUrl: null` (não há arquivo).
-- Em `REJECTED`, `inputFileUrl` é `null` porque o arquivo é removido do S3; `rejectionReason` indica o motivo (`INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`).
+- Refeições por texto vêm com `inputFileType: "TEXT"` (não há arquivo).
+- A resposta não traz URL do arquivo de foto ou áudio: o `inputFileUrl` e a CloudFront saíram em 2026-11-17 (o app nunca mostrou a foto).
+- Em `REJECTED`, o arquivo é removido do S3; `rejectionReason` indica o motivo (`INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`).
 - `canAddItems` indica se a refeição ainda aceita `POST /meals/{id}/items` (status `SUCCESS`, dentro das 24h e abaixo dos limites); não considera a cota do plano Free.
 - `unidentified` traz a categoria do que a IA viu e não conseguiu identificar na foto (`DRINK`, `PACKAGED`, `COVERED`, `OTHER`) ou `null`. Só vem preenchido enquanto `canAddItems` é `true` e nenhuma adição foi feita; depois disso volta `null` (o valor original continua salvo na refeição). Refeições por áudio, por texto e refeições antigas sempre trazem `null`.
 - `canRemoveItems` indica se a refeição aceita remover e restaurar itens (status `SUCCESS`, sem janela de tempo). A regra de manter pelo menos um item fica no app, que oferece excluir a refeição no lugar.
@@ -682,7 +670,6 @@ Implementado em código (sem WAF), com o decorator `@RateLimit` e contadores at�
       "status": "SUCCESS",
       "rejectionReason": null,
       "inputFileType": "TEXT",
-      "inputFileUrl": null,
       "name": "Almoço",
       "icon": "🍽️",
       "foods": [
@@ -955,7 +942,7 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 ### Backend
 
 - Serverless Framework v4;
-- AWS (Lambda, API Gateway HTTP API, DynamoDB, S3, CloudFront, SQS, SNS, Cognito, SES);
+- AWS (Lambda, API Gateway HTTP API, DynamoDB, S3, SQS, SNS, Cognito, SES);
 - TypeScript;
 - Zod (validação de schemas);
 - esbuild (bundling);
@@ -990,9 +977,9 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
   - Auth flow: USER_PASSWORD_AUTH
   - Username attribute: email
   - Senha: mínimo 8 caracteres
-  - Access token: 1 dia
+  - Access token: 1 hora, sem o escopo `aws.cognito.signin.user.admin` (suprimido pelo `preTokenGenerationTrigger` em todo token, para o usuário não chamar a API do Cognito com o próprio token, por exemplo `DeleteUser`)
   - Refresh token: 7 dias (com rotação; o anterior ainda vale por 60 s, `RetryGracePeriodSeconds`)
-- **UserPoolClient**: `nacal-api-{stage}-UserPoolClient`
+- **UserPoolClient**: `nacal-api-{stage}-UserPoolClient` (OAuth scopes `email`, `profile` e `openid`)
 - **Google Identity Provider**: Login com Google (Authorization Code + PKCE), scopes `profile email openid`, mapeamento de `name` e `email`, callback para o domínio do frontend
 
 ### S3
@@ -1001,12 +988,6 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
   - Armazenamento de arquivos de refeição (imagens e áudios)
   - CORS configurado para o frontend
   - Eventos de object creation habilitados
-
-### CloudFront
-
-- **Distribution**: CDN para servir arquivos de refeição
-  - OAC (Origin Access Control) configurado com o S3
-  - Suporte a domínio personalizado
 
 ### SQS
 
@@ -1047,8 +1028,6 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 | `API_DOMAIN_NAME`           | Domínio personalizado da API (ex: `api.nacal.app`) | Não         |
 | `API_CERTIFICATE_ARN`       | ARN do certificado ACM para o domínio da API            | Não         |
 | `CORS_ALLOWED_ORIGINS`      | Origens permitidas no HTTP API (vírgula). Vazio = `*` em dev; em prod use `https://app.nacal.app` | Não (recomendado em prod) |
-| `MEALS_CDN_DOMAIN_NAME`     | Domínio personalizado do CloudFront para arquivos       | Não         |
-| `MEALS_CDN_CERTIFICATE_ARN` | ARN do certificado ACM para o CDN                       | Não         |
 | `DLQ_ALARM_EMAIL`           | Email para notificações de falha no processamento       | Sim         |
 | `OPENAI_API_KEY`            | Chave de API do OpenAI                                  | Sim         |
 | `CLOUDFLARE_ACCOUNT_ID`     | Account ID do Cloudflare Workers AI (gate de foto)      | Não (sem credenciais o gate fica `SKIP`) |
@@ -1077,7 +1056,6 @@ Os segredos (`OPENAI_API_KEY`, `CLOUDFLARE_AI_API_TOKEN`, `ASAAS_API_KEY`, `ASAA
 | `MAIN_TABLE_NAME`       | `!Ref MainTable`                      |
 | `RATE_LIMIT_TABLE_NAME` | `!Ref RateLimitTable`                 |
 | `MEALS_BUCKET_NAME`     | `!Ref MealsBucket`                    |
-| `MEALS_CDN_DOMAIN_NAME` | CloudFront domain ou fallback do env  |
 | `MEALS_QUEUE_URL`       | `!Ref MealsQueue`                     |
 | `SERVICE_NAME`          | `nacal-api-<stage>` (dimensão `Service` das métricas EMF) |
 | `NODE_OPTIONS`          | `--enable-source-maps`, posto pelo Serverless em cada função quando o build gera sourcemap (não definir no `env.yml`, o valor por função sobrepõe o do provider) |
@@ -1129,11 +1107,9 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
       aws s3 rb s3://nacal-api-{stage}-meals-bucket --force
      ```
 
-3. Caso use `MEALS_CDN_DOMAIN_NAME`: garanta que o CNAME na zona de DNS **não aponte para a distribuição CloudFront antiga/deletada** (o CloudFront rejeita criar o alias enquanto o DNS apontar para outro CloudFront). Corrija o registro de DNS antes de continuar — ver "Configurar o CDN na zona de DNS" no passo a passo.
+3. Aguarde o "cooldown" do domínio do UserPool (`nacal-dev.auth.sa-east-1.amazoncognito.com`), se o deploy falhar com domínio indisponível, aguarde alguns minutos e rode o deploy novamente.
 
-4. Aguarde o "cooldown" do domínio do UserPool (`nacal-dev.auth.sa-east-1.amazoncognito.com`), se o deploy falhar com domínio indisponível, aguarde alguns minutos e rode o deploy novamente.
-
-5. Rode o deploy e recrie o CNAME do CDN apontando para o domain da nova distribuição:
+4. Rode o deploy:
 
    ```bash
    sls deploy
@@ -1154,7 +1130,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 ### Refeição fica com status REJECTED
 - É uma rejeição esperada, não uma falha de infraestrutura: arquivo inválido, foto sem comida/bebida ou áudio sem fala/alimentos;
 - Consulte `rejectionReason` em `GET /meals/{id}`: `INVALID_FILE`, `NOT_A_MEAL` ou `NO_FOOD_DETECTED`;
-- A cota é estornada (até 5 rejeições por dia por conta; da 6ª em diante, `quotaRefunded: false` e o log `meal rejected` traz `refunded: false`) e `inputFileUrl` retorna `null`; o arquivo é removido do S3;
+- A cota é estornada (até 5 rejeições por dia por conta; da 6ª em diante, `quotaRefunded: false` e o log `meal rejected` traz `refunded: false`); o arquivo é removido do S3;
 - Para falso positivo do gate de foto, revise `MEAL_GATE_REJECT_THRESHOLD` e os logs `meal_gate`/`meal_gate_error` no CloudWatch.
 
 ### Refeição fica com status FAILED
@@ -1166,7 +1142,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 
 ### Erro 401 / Token inválido
 - Verifique se o header `Authorization: Bearer <token>` está sendo enviado;
-- Confirme que o token não expirou (validade de 1 dia);
+- Confirme que o token não expirou (validade de 1 hora);
 - Use o endpoint `/auth/refresh-token` para obter um novo token.
 
 ### Erro 429 / Rate limit excedido
@@ -1201,10 +1177,6 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 ### "The provider Google does not exist for User Pool"
 - Erro de corrida ao criar o `UserPoolClient` antes do `GoogleIdentityProvider` (o client referencia o provider `Google` por nome);
 - Já mitigado com `DependsOn: GoogleIdentityProvider` no `UserPoolClient` em `sls/resources/userPool.yaml`; se reaparecer, é uma corrida de criação do CloudFormation — reexecute o deploy.
-
-### CloudFront: "incorrectly configured DNS record that points to another CloudFront distribution"
-- O CNAME de `MEALS_CDN_DOMAIN_NAME` está apontando para uma distribuição CloudFront antiga/deletada;
-- Corrija o registro de DNS (aponte para longe ou apague), rode o `sls deploy` e recrie o CNAME apontando para o domain da nova distribuição (ver "Configurar o CDN na zona de DNS").
 
 ### Deploy falha porque o log group do custom resource existe
 - O `sls remove` não apaga o log group `/aws/lambda/nacal-api-{stage}-custom-resource-existing-s3`;

@@ -40,7 +40,7 @@ AWS_PROFILE=nacal-prod sls deploy function -f processMeal --stage prod
   - **Dados**: as duas tabelas (`DeletionProtectionEnabled`) e o user pool (`DeletionProtection: ACTIVE`) recusam a exclusão. As três proteções valem só com a condição `IsProd`.
   - **Arquivos**: o bucket de refeições tem `DeletionPolicy: Retain` e sobrevive à remoção da stack, em qualquer stage.
 
-  As tabelas e o user pool não têm `DeletionPolicy: Retain`. Se a termination protection for desligada, a remoção da stack falha nesses recursos em vez de preservá-los fora da stack, e o resto (Lambdas, filas, API Gateway, CloudFront) é apagado. Em dev nada disso está ligado, exceto o `Retain` do bucket.
+  As tabelas e o user pool não têm `DeletionPolicy: Retain`. Se a termination protection for desligada, a remoção da stack falha nesses recursos em vez de preservá-los fora da stack, e o resto (Lambdas, filas, API Gateway) é apagado. Em dev nada disso está ligado, exceto o `Retain` do bucket.
 
 ## Permissões e segredos por função
 

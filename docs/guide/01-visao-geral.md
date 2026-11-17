@@ -65,7 +65,6 @@ flowchart TB
 
     subgraph async["Processamento assíncrono"]
         s3[("S3<br/>MealsBucket")]
-        cdn["CloudFront<br/>CDN das refeições"]
         uploaded["newMealUploadedTrigger"]
         mealsQ[["SQS MealsQueue"]]
         process["processMeal"]
@@ -89,8 +88,6 @@ flowchart TB
 
     app --> apigw --> authz --> compute
     app -. "Presigned POST" .-> s3
-    app -. "fotos" .-> cdn
-    cdn --> s3
     cognito --> triggers
     authFns --> cognito
     compute --> main
@@ -114,7 +111,7 @@ flowchart TB
 Pontos que valem guardar:
 
 - **O arquivo nunca passa pela Lambda na subida.** A API devolve um Presigned POST e o app manda o arquivo direto para o S3. A Lambda só lê o arquivo depois, já no processamento.
-- **As fotos saem pela CDN.** O app mostra as fotos pela CloudFront. A OpenAI não usa a CDN: o `processMeal` manda o arquivo que acabou de baixar do S3 e validar (base64 na foto). O bucket não é público (Origin Access Control).
+- **O arquivo não sai do S3 para o app.** Não há CDN e a API não devolve URL do arquivo (a CloudFront foi removida em 2026-11-17: o app nunca mostrou a foto). O `processMeal` lê o arquivo do S3, valida e manda o mesmo buffer para a OpenAI (base64 na foto). O bucket não é público. Se o app passar a mostrar a foto, o caminho previsto é uma URL pré-assinada de `GetObject` com validade curta, gerada pela API a cada resposta.
 - **Duas tabelas.** `MainTable` guarda as entidades. `RateLimitTable` guarda contadores atômicos: rate limit por IP, conta, e-mail ou hash do token, as **cotas de refeição**, o teto diário de rejeições estornadas e a idempotência do webhook. As duas usam TTL (`expiresAt`).
 - **Toda fila tem DLQ e alarme.** Os alarmes só disparam em prod (`IsProd`) e caem no tópico SNS, que manda e-mail. Além das filas, há alarmes de `5xx` do HTTP API, de resposta não-2xx do webhook do Asaas, de refeição `FAILED` e de throttling da `processMeal` (ver [operação](06-operacao.md#alarmes)).
 - **Logs em JSON.** Uma linha por evento, com retenção de 30 dias; as métricas `MealFailed` e `WebhookNon2xx` saem das próprias linhas (EMF), sem metric filter.
@@ -193,4 +190,4 @@ São 32 Lambdas, definidas em `sls/functions/*.yml`. O handler de cada uma é um
 
 Até 2026-11-17 o padrão era 128 MB. As funções HTTP usavam de 97 a 121 MB (`checkout`, `oauthCallback` e `reconcilePayments` chegavam a 121 MB), perto de estourar a memória, e com 128 MB a Lambda recebe pouca CPU: Init Duration p50 de 258 a 313 ms e p90 da duração acima de 1,2 s nas 6 rotas mais usadas. Por isso o padrão subiu para 256 MB e as 6 rotas mais chamadas pelo app foram para 512 MB. Medido em dev depois da mudança: o Init Duration não muda (255–325 ms, porque a fase de init recebe CPU independente da memória), mas a duração da primeira request depois do cold start caiu de 1,0–2,1 s para 0,3–0,7 s (p50: `createMeal` 2,1 → 0,55 s, `signIn` 2,0 → 0,7 s, `refreshToken` 1,7 → 0,6 s, `me` 1,4 → 0,46 s, `getMealById` 1,25 → 0,32 s, `listMeal` 1,0 → 0,34 s). O custo fica abaixo de US$ 0,01 por mês no volume atual de prod. Para conferir, use a consulta de `REPORT` em [06-operacao.md](06-operacao.md).
 
-Os timeouts de `checkout` e `cancel` ficam acima do abort de 10 s de cada chamada ao Asaas: o `checkout` pode fazer duas chamadas seguidas (cancelar a assinatura antiga e criar o checkout) e fica logo abaixo do corte de 30 s do HTTP API. O `oauthCallback` cobre o abort de 5 s da troca do `code` mais o `GetUser` e a conta no DynamoDB (ver [billing](fluxos/billing.md#erros) e [login com Google](fluxos/auth-google-oauth.md#erros)).
+Os timeouts de `checkout` e `cancel` ficam acima do abort de 10 s de cada chamada ao Asaas: o `checkout` pode fazer duas chamadas seguidas (cancelar a assinatura antiga e criar o checkout) e fica logo abaixo do corte de 30 s do HTTP API. O `oauthCallback` cobre o abort de 5 s da troca do `code` mais a validação do JWT, o `AdminGetUser` e a conta no DynamoDB (ver [billing](fluxos/billing.md#erros) e [login com Google](fluxos/auth-google-oauth.md#erros)).
