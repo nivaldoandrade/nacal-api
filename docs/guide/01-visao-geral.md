@@ -14,7 +14,7 @@ flowchart LR
     end
 
     google["Google<br/>login social"]
-    openai["OpenAI<br/>gpt-5.4-mini + gpt-4o-transcribe"]
+    openai["OpenAI<br/>gpt-5.4-mini + gpt-transcribe"]
     cf["Cloudflare Workers AI<br/>gate de foto clef-flash"]
     asaas["Asaas<br/>pagamentos"]
     ses["Amazon SES<br/>e-mails do Cognito"]

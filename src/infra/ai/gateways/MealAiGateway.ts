@@ -43,7 +43,7 @@ const MODEL = 'gpt-5.4-mini';
 
 const REASONING_EFFORT: OpenAI.ReasoningEffort = 'none';
 
-const TRANSCRIPTION_MODEL = 'gpt-4o-transcribe';
+const TRANSCRIPTION_MODEL = 'gpt-transcribe';
 
 const MAX_OUTPUT_TOKENS = 2048;
 

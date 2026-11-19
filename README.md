@@ -946,7 +946,7 @@ Triggers do Cognito, evento do S3, filas SQS e o schedule da reconciliação est
 - TypeScript;
 - Zod (validação de schemas);
 - esbuild (bundling);
-- OpenAI API (GPT-5.4-mini, GPT-4o-transcribe);
+- OpenAI API (GPT-5.4-mini, gpt-transcribe);
 - Cloudflare Workers AI (Clef-flash, gate de foto);
 - Asaas (gateway de pagamento — checkout hospedado + webhook);
 - `image-size` e `music-metadata` (validação de imagens e áudios);
@@ -1171,7 +1171,7 @@ Necessário quando é preciso destruir e recriar todos os recursos, por exemplo 
 ### Processamento de áudio falha
 - Verifique se o arquivo de áudio não está corrompido;
 - Confirme que o formato é suportado (M4A ou WebM, 1–32s e até 2 MB);
-- Verifique se a `OPENAI_API_KEY` tem acesso ao modelo `gpt-4o-transcribe`;
+- Verifique se a `OPENAI_API_KEY` tem acesso ao modelo `gpt-transcribe`;
 - Áudio sem fala ou sem alimentos vira `REJECTED` (`NO_FOOD_DETECTED`), não `FAILED`.
 
 ### "The provider Google does not exist for User Pool"
