@@ -113,6 +113,8 @@ Marcadores úteis para buscar no CloudWatch Logs Insights (campo `message`):
 | `meal_gate` | `processMeal` | Decisão, score, latência e tokens do gate |
 | `meal_gate_error` | `processMeal` | Falha ou timeout do gate (a foto seguiu sem ele) |
 | `unidentified foods removed` | `processMeal`, `createTextMeal`, `addMealItems` | Alimentos removidos por não estarem identificados |
+| `billing webhook` | `webhookAsaas` | Evento do Asaas processado, com `gatewayEvent`, `type`, `eventId`, `paymentId`, `subscriptionRef`, `checkoutId`/`checkoutSession`, `externalReference`, `accountId` e `result` (`applied`, `not_applied`, `duplicate` ou `unmatched`), mais `reversal` quando houver |
+| `asaas webhook ignored` | `webhookAsaas` | Evento que a API não trata (ex.: `PAYMENT_UPDATED`, `PAYMENT_DELETED`, `SUBSCRIPTION_UPDATED`), com `gatewayEvent` e `eventId` |
 | `billing reconciliation` | `reconcilePayments` | Resumo de cada execução |
 | `failed to refund meal quota` | `createMeal` | Estorno de cota que falhou na criação (conferir o contador na mão). No `createTextMeal`, a mesma falha sai no `error` da linha `http request` do `500` (`AggregateError` com "refund meal quota") |
 

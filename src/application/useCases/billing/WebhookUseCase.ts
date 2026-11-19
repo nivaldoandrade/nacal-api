@@ -37,9 +37,37 @@ export class WebhookUseCase {
       return { handled: false };
     }
 
-    const { handled } = await this.applyEvent(event);
+    logger.appendContext({ gatewayEvent: event.gatewayEvent, eventId: event.eventId });
+
+    const { handled, applied, duplicate, accountId, reversal } = await this.applyEvent(event);
+
+    logger.info('billing webhook', {
+      gatewayEvent: event.gatewayEvent,
+      type: event.type,
+      eventId: event.eventId,
+      paymentId: 'paymentId' in event ? event.paymentId : undefined,
+      subscriptionRef: 'subscriptionRef' in event ? event.subscriptionRef : undefined,
+      checkoutId: 'checkoutId' in event ? event.checkoutId : undefined,
+      checkoutSession: 'checkoutSession' in event ? event.checkoutSession : undefined,
+      externalReference: event.externalReference,
+      accountId,
+      result: WebhookUseCase.resolveResult({ handled, applied, duplicate }),
+      reversal,
+    });
 
     return { handled };
+  }
+
+  private static resolveResult({ handled, applied, duplicate }: Pick<WebhookUseCase.ApplyEventOutput, 'handled' | 'applied' | 'duplicate'>) {
+    if (duplicate) {
+      return 'duplicate';
+    }
+
+    if (!handled) {
+      return 'unmatched';
+    }
+
+    return applied ? 'applied' : 'not_applied';
   }
 
   async applyEvent(
@@ -49,7 +77,7 @@ export class WebhookUseCase {
     const { eventId } = event;
 
     if (eventId && await this.rateLimitRepository.hasWebhookEvent({ scope: 'webhook-event', key: eventId })) {
-      return { handled: true, applied: false };
+      return { handled: true, applied: false, duplicate: true };
     }
 
     const subscriptionRef = 'subscriptionRef' in event ? event.subscriptionRef : undefined;
@@ -668,6 +696,7 @@ export namespace WebhookUseCase {
   export type ApplyEventOutput = {
     handled: boolean;
     applied: boolean;
+    duplicate?: boolean;
     accountId?: string;
     reversal?: ReversalResult;
   };

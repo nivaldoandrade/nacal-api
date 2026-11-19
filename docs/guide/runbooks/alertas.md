@@ -134,7 +134,7 @@ A reconciliação horária (só em prod) achou algo que o webhook não fez. O e-
 
 | Lista | O que fazer |
 |---|---|
-| Ativados pela reconciliação | Ver nos logs da `webhookAsaas` e nos webhooks do painel do Asaas (histórico de envios) por que o webhook não ativou |
+| Ativados pela reconciliação | Ver nos logs da `webhookAsaas` (linha `billing webhook` do evento, com `result`) e nos webhooks do painel do Asaas (histórico de envios) por que o webhook não ativou |
 | Estornos ou chargebacks aplicados pela reconciliação | O mesmo, para o evento de estorno. A conta já foi ajustada |
 | Pagos ou estornados sem conta correspondente | Achar o cliente no painel do Asaas e ligar o pagamento à conta à mão |
 | Com erro | Nada: são tentados de novo na próxima hora. Se repetir, ver os logs da `reconcilePayments` |

@@ -147,6 +147,7 @@ export class AsaasPaymentGateway extends IPaymentGateway {
 
     const base = {
       eventId: payload.id,
+      gatewayEvent: payload.event,
       externalReference:
         payload.payment?.externalReference
         ?? payload.checkout?.externalReference
@@ -194,6 +195,7 @@ export class AsaasPaymentGateway extends IPaymentGateway {
       case 'SUBSCRIPTION_DELETED':
         return { ...base, type: 'SUBSCRIPTION_CANCELED', subscriptionRef: payload.subscription?.id };
       default:
+        logger.info('asaas webhook ignored', { gatewayEvent: payload.event, eventId: payload.id });
         return null;
     }
   }

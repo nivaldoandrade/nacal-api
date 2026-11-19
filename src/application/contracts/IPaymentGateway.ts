@@ -36,7 +36,7 @@ export namespace IPaymentGateway {
 
   export type ReversedPayment = PaidPayment & { kind: ReversalKind };
 
-  export type BillingEvent = { eventId: string; externalReference?: string } & (
+  export type BillingEvent = { eventId: string; externalReference?: string; gatewayEvent?: string } & (
     | { type: 'CHECKOUT_PAID'; checkoutId: string; subscriptionRef?: string }
     | { type: 'PAYMENT_CREATED'; paymentId: string; subscriptionRef?: string; checkoutSession?: string }
     | { type: 'PAYMENT_SUCCEEDED'; paymentId: string; subscriptionRef?: string; checkoutSession?: string; dueDate: string; amount: number }
