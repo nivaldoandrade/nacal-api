@@ -29,10 +29,14 @@ const taggedFoodSchema = foodSchema.extend({
 
 const taggedFoodsSchema = z.array(taggedFoodSchema).max(Meal.MAX_FOODS);
 
+const imageFoodSchema = taggedFoodSchema.extend({
+  labelServing: z.number().nullable(),
+});
+
 const imageSchema = z.object({
   unidentified: unidentifiedKindSchema,
   mealType: mealTypeSchema,
-  foods: taggedFoodsSchema,
+  foods: z.array(imageFoodSchema).max(Meal.MAX_FOODS),
 });
 
 const addItemsSchema = z.object({
@@ -122,7 +126,7 @@ export class MealAiGateway {
       },
     ];
 
-    const { unidentified, mealType, foods: taggedFoods } = await this.callOpenAI({
+    const { unidentified, mealType, foods: imageFoods } = await this.callOpenAI({
       mealId: meal.id,
       operation: 'PICTURE',
       input,
@@ -133,6 +137,7 @@ export class MealAiGateway {
         signal,
       },
     });
+    const taggedFoods = imageFoods.map((food) => MealAiGateway.applyLabelServing(meal.id, food));
     const { foods, unidentifiedFoods } = MealAiGateway.splitUnidentifiedFoods({
       mealId: meal.id,
       label: 'foods',
@@ -361,6 +366,40 @@ export class MealAiGateway {
 
   }
 
+  static applyLabelServing(
+    mealId: string,
+    { labelServing, ...food }: MealAiGateway.ImageFood,
+  ): MealAiGateway.TaggedFood {
+    if (!labelServing || labelServing <= 0) {
+      return food;
+    }
+
+    const amount = MealAiGateway.quantityAmount(food.quantity);
+
+    if (!amount || amount === labelServing) {
+      return food;
+    }
+
+    const factor = amount / labelServing;
+    const scale = (value: number) => Math.round(value * factor * 10) / 10;
+
+    logger.info('label serving scaled', { mealId, food: food.name, labelServing, amount });
+
+    return {
+      ...food,
+      carbohydrates: scale(food.carbohydrates),
+      fats: scale(food.fats),
+      proteins: scale(food.proteins),
+    };
+  }
+
+  private static quantityAmount(quantity: string): number | null {
+    const match = quantity.match(/\((\d+(?:[.,]\d+)?)\s*(?:g|ml)\b/i)
+      ?? quantity.match(/(\d+(?:[.,]\d+)?)\s*(?:g|ml)\b/i);
+
+    return match ? Number(match[1].replace(',', '.')) : null;
+  }
+
   private static splitUnidentifiedFoods({
     mealId,
     label,
@@ -520,6 +559,8 @@ export namespace MealAiGateway {
   export type MealType = z.infer<typeof mealTypeSchema>;
 
   export type TaggedFood = z.infer<typeof taggedFoodSchema>;
+
+  export type ImageFood = z.infer<typeof imageFoodSchema>;
 
   export type SplitFoods = {
     foods: Food[];

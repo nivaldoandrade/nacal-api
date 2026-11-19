@@ -9,11 +9,11 @@ export function getImagePrompt() {
     **Step-by-step Reasoning Requirement (Reasoning before conclusions):**
     1. First, carefully examine the image to detect all recognizable food items, considering only those you are sure about. Never guess or include items not clearly visible.
     2. Next, estimate the amount for each detected item (in grams, or in milliliters for liquids) based on visual cues and ambient references, following the "Portion estimation" guidelines below.
-    3. If a user note is provided, apply it following the "User note" guidelines below: add the items it mentions that are not visible, and correct the identity or quantity of visible items it refers to.
+    3. If a user note is provided, apply it following the "User note" guidelines below: add the items it mentions that are not visible, and correct the identity or quantity of visible items it refers to. Keep every visible food from step 1, including the ones the note does not mention.
     4. Only after confident identification and quantification, estimate the macronutrient (proteins, carbohydrates, fats) values for each food item. Do NOT calculate calories — the backend will compute them later.
     5. Check whether the user note explicitly names which meal it is and, only in that case, fill the "mealType" field (see the guidelines below).
     6. Check whether something edible is clearly present in the image but its content or identity cannot be seen and was not explained by the note, and fill the "unidentified" field accordingly (see the guidelines below).
-    7. Before answering, verify that every food or drink named in the user note is in "foods" (unless the note guidelines say to ignore it). If one is missing, add it.
+    7. Before answering, verify that every food or drink named in the user note is in "foods" (unless the note guidelines say to ignore it), and that every food visible in the image is in "foods", whether the note mentions it or not. If one is missing, add it.
 
     Persist until all the above objectives are fully satisfied before producing your output. Always think step-by-step internally (chain of thought) before outputting the structured response.
 
@@ -25,8 +25,18 @@ export function getImagePrompt() {
     - Do not inflate portions: when in doubt between two sizes, prefer the one that matches the visible volume, not a generous serving.
     - Before finishing the list, look at the plate once more, including its edges and the areas under or next to the cutlery and other foods, and add any small piece you have not listed yet (e.g., a small piece of chicken half covered by rice).
 
+    **Packaged foods and nutrition labels:**
+    - When a package shows a legible nutrition facts table ("tabela nutricional"), use the values printed on it for that item instead of generic estimates.
+    - Read each value from its own row (carboidratos, proteínas, gorduras totais) and never mix rows or reuse a number from another row.
+    - For an item whose macros come from a nutrition table, copy the macros exactly as printed for the table's serving, without converting them, and put that serving size in "labelServing" as a number in grams or milliliters (e.g., 100 for "porção de 100g"). The backend converts the macros to the quantity eaten.
+    - The "quantity" of that item is the amount eaten: the net weight printed on the package (e.g., "90g" for "Pudim Vegano 90G") unless the note or the image shows otherwise.
+    - Example: a 90g package with a table per 100g showing 21.2g of carbohydrates, 2.4g of proteins and 7.2g of fats becomes quantity "90g", carbohydrates 21.2, proteins 2.4, fats 7.2 and labelServing 100.
+    - Every item in "foods" has a "labelServing" field. Set it to null for every item whose macros you estimated yourself, which is almost always the case. Never fill it from typical values or from a table you cannot see in the image.
+    - When the product is identified by its label or packaging (name, brand, or nutrition table), it is a concrete item in "foods" and it does not count as "PACKAGED".
+
     **User note (optional):**
     - The user may send a short note after the image, wrapped in <user_note></user_note> tags. It describes the same meal: items that are not visible (e.g., a drink in an opaque cup, a dessert outside the frame), hidden ingredients (e.g., sugar in the coffee, filling, cooking oil), quantities, or which meal it is.
+    - The note complements the image and never narrows it: it is not a complete list of the meal. Every food visible in the image stays in "foods" even when the note does not mention it (e.g., the note only explains which piece is liver and which is pot roast, and the plate also has rice and spaghetti: list the rice and the spaghetti too).
     - Add every food or drink the note explicitly mentions that is not visible in the image, using the quantity stated in the note or, when absent, a typical single serving.
     - An item named in the note is always confidently identified, even when the image only shows its container (e.g., the note says "coca zero" and the image shows an opaque cup): add it to "foods".
     - Always include note items with zero or near-zero macros (e.g., diet or zero soda, water, black coffee, unsweetened tea), filling the macros with 0 when that is the real value. Zero macros never justify leaving an item out.
@@ -53,7 +63,7 @@ export function getImagePrompt() {
     - Never guess the type of a drink: without a clear visual cue (distinctive color, foam, label, garnish) or a mention in the note, do not add it to "foods" as water or any other drink; flag it as "DRINK" instead. The same applies to a soda bottle or can whose brand you see but whose version (regular, zero, diet, or light) you cannot read: never assume the regular, sugared version.
     - Set "unidentified" to null when:
       - the user note already names what that item is (e.g., the note says "coca no copo" and the image shows an opaque cup). In that case the item MUST be in "foods", following the user note guidelines. A note that does not mention the item (e.g., only "almoço", or only about the plate) does NOT explain it: keep the flag;
-      - the item was identified and is already in "foods";
+      - the item was identified and is already in "foods", including a package whose label identifies the product;
       - it is only uncertainty about a visible food (keep omitting uncertain foods, as stated in the mandatory guidelines);
       - the object is not food (cutlery, napkins, empty plates, a clearly empty glass, decorations);
       - you are not sure whether there is something edible there.
