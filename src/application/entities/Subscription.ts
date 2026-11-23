@@ -74,6 +74,30 @@ export class Subscription {
     }
   }
 
+  static addCycle(from: Date | string, cycle: Subscription.PlanCycle): Date {
+    const date = new Date(from);
+
+    if (cycle === 'MONTHLY') {
+      date.setUTCMonth(date.getUTCMonth() + 1);
+      return date;
+    }
+
+    date.setUTCFullYear(date.getUTCFullYear() + 1);
+    return date;
+  }
+
+  static subtractCycle(from: Date, cycle: Subscription.PlanCycle): Date {
+    const date = new Date(from);
+
+    if (cycle === 'MONTHLY') {
+      date.setUTCMonth(date.getUTCMonth() - 1);
+      return date;
+    }
+
+    date.setUTCFullYear(date.getUTCFullYear() - 1);
+    return date;
+  }
+
 }
 
 export namespace Subscription {
@@ -131,6 +155,8 @@ export namespace Subscription {
       features: [`Até ${PRO_DAILY_MEAL_LIMIT} refeições AI por dia`],
     },
   } as const;
+
+  export type PlanCycle = (typeof Plan)[PlanIdType]['cycle'];
 
   export type EffectivePlan = 'FREE' | 'PRO';
 

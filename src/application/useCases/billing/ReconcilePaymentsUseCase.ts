@@ -1,5 +1,6 @@
 import { IPaymentGateway } from '@application/contracts/IPaymentGateway';
-import { WebhookUseCase } from '@application/useCases/billing/WebhookUseCase';
+import { BillingAlertService } from '@application/services/BillingAlertService';
+import { BillingEventService } from '@application/services/BillingEventService';
 import { RateLimitRepository } from '@infra/databases/dynamodb/RateLimitRepository';
 import { AlertGateway } from '@infra/gateways/AlertGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -15,7 +16,7 @@ export class ReconcilePaymentsUseCase {
 
   constructor(
     private readonly paymentGateway: IPaymentGateway,
-    private readonly webhookUseCase: WebhookUseCase,
+    private readonly billingEventService: BillingEventService,
     private readonly rateLimitRepository: RateLimitRepository,
     private readonly alertGateway: AlertGateway,
   ) { }
@@ -66,7 +67,7 @@ export class ReconcilePaymentsUseCase {
         `Com erro (serão tentados de novo na próxima execução): ${output.failed.length}`,
         ...output.failed.map((item) => `- ${item.paymentId} · ${item.error}`),
         '',
-        `Como agir em cada lista: ${WebhookUseCase.ALERTS_GUIDE}#reconciliação-encontrou-divergências`,
+        `Como agir em cada lista: ${BillingAlertService.ALERTS_GUIDE}#reconciliação-encontrou-divergências`,
       ]);
     }
 
@@ -80,7 +81,7 @@ export class ReconcilePaymentsUseCase {
   ): Promise<void> {
     const eventId = `reconcile-payment#${payment.paymentId}`;
 
-    const { handled, applied, accountId } = await this.webhookUseCase.applyEvent({
+    const { handled, applied, accountId } = await this.billingEventService.apply({
       type: 'PAYMENT_SUCCEEDED',
       eventId,
       externalReference: payment.externalReference,
@@ -137,7 +138,7 @@ export class ReconcilePaymentsUseCase {
   ): Promise<void> {
     const eventId = `reconcile-reversal#${payment.paymentId}`;
 
-    const { handled, applied, accountId } = await this.webhookUseCase.applyEvent({
+    const { handled, applied, accountId } = await this.billingEventService.apply({
       type: 'PAYMENT_REVERSED',
       kind: payment.kind,
       eventId,

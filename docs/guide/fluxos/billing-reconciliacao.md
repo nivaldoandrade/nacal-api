@@ -2,7 +2,7 @@
 
 ## Resumo
 
-Uma Lambda agendada roda **de hora em hora**, lista no Asaas os pagamentos confirmados e os estornados (estorno total ou chargeback) dos últimos 35 dias e passa cada um pela **mesma lógica do webhook** (`WebhookUseCase.applyEvent`). Se o webhook já tinha feito o trabalho, nada muda. Se ele se perdeu, a assinatura é ativada (ou o ciclo estornado é descontado) e o time recebe um e-mail. É a rede de segurança do [billing](billing.md).
+Uma Lambda agendada roda **de hora em hora**, lista no Asaas os pagamentos confirmados e os estornados (estorno total ou chargeback) dos últimos 35 dias e passa cada um pela **mesma lógica do webhook** (`BillingEventService.apply`). Se o webhook já tinha feito o trabalho, nada muda. Se ele se perdeu, a assinatura é ativada (ou o ciclo estornado é descontado) e o time recebe um e-mail. É a rede de segurança do [billing](billing.md).
 
 | | |
 |---|---|
@@ -19,7 +19,7 @@ sequenceDiagram
     participant EB as EventBridge
     participant R as reconcilePayments
     participant As as Asaas
-    participant W as WebhookUseCase.applyEvent
+    participant W as BillingEventService.apply
     participant RL as RateLimitTable
     participant DB as MainTable
     participant SNS as SNS → e-mail
@@ -98,7 +98,7 @@ A resposta traz `checked`, `activated`, `reversed`, `unmatched` e `failed`.
 | Schedule | [`sls/functions/billing.yml`](../../../sls/functions/billing.yml), [`reconcileScheduleEnabled.js`](../../../sls/config/reconcileScheduleEnabled.js) |
 | Handler | [`ReconcilePaymentsScheduleHandler.ts`](../../../src/application/schedules/ReconcilePaymentsScheduleHandler.ts) |
 | Use case | [`ReconcilePaymentsUseCase.ts`](../../../src/application/useCases/billing/ReconcilePaymentsUseCase.ts) |
-| Lógica compartilhada com o webhook | [`WebhookUseCase.ts`](../../../src/application/useCases/billing/WebhookUseCase.ts) |
+| Lógica compartilhada com o webhook | [`BillingEventService.ts`](../../../src/application/services/BillingEventService.ts) |
 | Listagem no Asaas | [`AsaasPaymentGateway.ts`](../../../src/infra/gateways/AsaasPaymentGateway.ts) (`listPaidPayments`, `listReversedPayments`) |
 | Alerta | [`AlertGateway.ts`](../../../src/infra/gateways/AlertGateway.ts) |
 | Alarme | [`reconcilePaymentsAlarm.yml`](../../../sls/resources/reconcilePaymentsAlarm.yml) |

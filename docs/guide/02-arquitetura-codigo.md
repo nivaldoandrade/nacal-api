@@ -79,7 +79,7 @@ src/
 │   ├── events/            handler do evento do S3
 │   ├── schedules/         handler da reconciliação
 │   ├── useCases/          ações de negócio, por domínio
-│   ├── services/          cota, rate limit, nome da refeição, validação de arquivo, edição de itens, meta, provisionamento de conta
+│   ├── services/          cota, rate limit, nome da refeição, validação de arquivo, edição de itens, meta, provisionamento de conta, eventos e alertas de cobrança
 │   ├── entities/          Account, Profile, Goal, Meal, Subscription, PendingSignUp
 │   ├── presenters/        formato de saída da refeição
 │   ├── query/             leituras diretas no DynamoDB
