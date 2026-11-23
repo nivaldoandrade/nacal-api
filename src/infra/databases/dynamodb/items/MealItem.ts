@@ -68,6 +68,13 @@ export class MealItem {
     return `MEAL#${mealId}`;
   }
 
+  static getKey({ accountId, mealId }: MealItem.PKParams): Pick<MealItem.Keys, 'PK' | 'SK'> {
+    return {
+      PK: MealItem.getPK({ accountId, mealId }),
+      SK: MealItem.getSK(mealId),
+    };
+  }
+
   static getDay(createdAt: Date, timeZone?: string | null): string {
     return getLocalDay(createdAt, timeZone);
   }

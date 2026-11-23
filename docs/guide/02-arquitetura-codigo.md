@@ -86,7 +86,7 @@ src/
 │   └── errors/            ErrorCode, ApplicationError, HttpError, MealRejectedError
 └── infra/
     ├── clients/           clients do AWS SDK
-    ├── databases/dynamodb repositórios, items (entidade ↔ item) e Unit of Work
+    ├── databases/dynamodb repositórios, items (entidade ↔ item), Unit of Work e utils (update condicional)
     ├── gateways/          Cognito, S3, SQS, SNS, Asaas
     ├── ai/                gateways da OpenAI e da Cloudflare + prompts
     ├── emails/            layout e templates dos e-mails

@@ -1,4 +1,5 @@
 import { Meal } from '@application/entities/Meal';
+import { MealRefundRepository } from '@infra/databases/dynamodb/MealRefundRepository';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -9,6 +10,7 @@ export class CheckMealUploadUseCase {
 
   constructor(
     private readonly mealRepository: MealRepository,
+    private readonly mealRefundRepository: MealRefundRepository,
     private readonly mealStorageGateway: MealFileStorageGateway,
   ) { }
 
@@ -23,7 +25,7 @@ export class CheckMealUploadUseCase {
       return;
     }
 
-    const failure = await this.mealRepository.failAndRefund({ meal });
+    const failure = await this.mealRefundRepository.failAndRefund({ meal });
 
     if (failure.failed) {
       logger.metric('MealFailed', {

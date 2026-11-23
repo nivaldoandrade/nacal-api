@@ -5,6 +5,8 @@ import { MealNamingService } from '@application/services/MealNamingService';
 import { MealQuotaService } from '@application/services/MealQuotaService';
 import { MealAiGateway } from '@infra/ai/gateways/MealAiGateway';
 import { MealGateGateway } from '@infra/ai/gateways/MealGateGateway';
+import { MealProcessingRepository } from '@infra/databases/dynamodb/MealProcessingRepository';
+import { MealRefundRepository } from '@infra/databases/dynamodb/MealRefundRepository';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { Injectable } from '@kernel/decorators/Injectable';
@@ -15,6 +17,8 @@ export class ProcessMealUseCase {
 
   constructor(
     private readonly mealRepository: MealRepository,
+    private readonly mealProcessingRepository: MealProcessingRepository,
+    private readonly mealRefundRepository: MealRefundRepository,
     private readonly mealStorageGateway: MealFileStorageGateway,
     private readonly mealAiGateway: MealAiGateway,
     private readonly mealFileValidationService: MealFileValidationService,
@@ -42,7 +46,7 @@ export class ProcessMealUseCase {
     }
 
     const now = Math.floor(Date.now() / 1000);
-    const claimedMeal = await this.mealRepository.claimForProcessing({
+    const claimedMeal = await this.mealProcessingRepository.claimForProcessing({
       accountId,
       mealId,
       now,
@@ -119,7 +123,7 @@ export class ProcessMealUseCase {
         .map((food, index) => Meal.createFood(food, Meal.FoodSource.INITIAL, index));
       claimedMeal.unidentified = unidentified;
 
-      const markedAsSuccess = await this.mealRepository.markSuccess({
+      const markedAsSuccess = await this.mealProcessingRepository.markSuccess({
         meal: claimedMeal,
         gateScore,
       });
@@ -141,7 +145,7 @@ export class ProcessMealUseCase {
       });
     } catch (error) {
       if (error instanceof MealRejectedError) {
-        const rejection = await this.mealRepository.rejectAndRefund({
+        const rejection = await this.mealRefundRepository.rejectAndRefund({
           meal: claimedMeal,
           reason: error.reason,
           gateScore: error.gateScore,
@@ -179,7 +183,7 @@ export class ProcessMealUseCase {
 
   private async handleFailure(meal: Meal): Promise<boolean> {
     if (meal.attempts >= Meal.MAX_ATTEMPTS) {
-      const failure = await this.mealRepository.failAndRefund({ meal });
+      const failure = await this.mealRefundRepository.failAndRefund({ meal });
 
       if (failure.failed) {
         logger.metric('MealFailed', { source: 'attemptsExhausted', attempts: meal.attempts });
@@ -193,7 +197,7 @@ export class ProcessMealUseCase {
       throw new Error(`Meal ${meal.id} has no processing lease.`);
     }
 
-    return this.mealRepository.markForRetry({
+    return this.mealProcessingRepository.markForRetry({
       accountId: meal.accountId,
       mealId: meal.id,
       leaseExpiresAt: meal.leaseExpiresAt,
@@ -227,7 +231,7 @@ export class ProcessMealUseCase {
       return;
     }
 
-    const failure = await this.mealRepository.failAndRefund({ meal });
+    const failure = await this.mealRefundRepository.failAndRefund({ meal });
 
     if (failure.failed) {
       logger.metric('MealFailed', { source: 'leaseExpired', attempts: meal.attempts });

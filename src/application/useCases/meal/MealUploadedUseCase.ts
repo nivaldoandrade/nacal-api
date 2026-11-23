@@ -1,3 +1,4 @@
+import { MealProcessingRepository } from '@infra/databases/dynamodb/MealProcessingRepository';
 import { MealRepository } from '@infra/databases/dynamodb/MealRepository';
 import { MealFileStorageGateway } from '@infra/gateways/MealFileStorageGateway';
 import { MealQueueGateway } from '@infra/gateways/MealQueueGateway';
@@ -10,6 +11,7 @@ export class MealUploadedUseCase {
   constructor(
     private readonly mealFileStorageGateway: MealFileStorageGateway,
     private readonly mealRepository: MealRepository,
+    private readonly mealProcessingRepository: MealProcessingRepository,
     private readonly mealQueueGateway: MealQueueGateway,
   ) { }
 
@@ -35,7 +37,7 @@ export class MealUploadedUseCase {
       return;
     }
 
-    const queued = await this.mealRepository.markQueued({ accountId, mealId });
+    const queued = await this.mealProcessingRepository.markQueued({ accountId, mealId });
 
     if (!queued) {
       return;
